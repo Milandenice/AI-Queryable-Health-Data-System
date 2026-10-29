@@ -91,3 +91,39 @@ def test_duckdb_reads_records_and_aligns_daily_metric_summaries(tmp_path):
     assert summary[0]["steps"]["total_steps"] == 500
     assert summary[0]["workouts"]["workout_minutes"] == 60.0
     assert summary[0]["weight"]["weight_kg"] == 80.5
+
+    sql_result = service.run_sql(
+        "SELECT user_id, round(avg(bpm), 1) AS average_bpm "
+        "FROM heart_rate WHERE user_id = 'user-0001' GROUP BY user_id"
+    )
+    assert sql_result["columns"] == ["user_id", "average_bpm"]
+    assert sql_result["rows"] == [{"user_id": "user-0001", "average_bpm": 72.0}]
+
+    catalog = {table["name"]: table for table in service.catalog()}
+    assert set(catalog) == {"heart_rate", "sleep", "steps", "workouts", "weight"}
+    assert catalog["heart_rate"]["file_count"] == 1
+    assert service.table_schema("weight")[-1] == {
+        "name": "event_date",
+        "type": "DATE",
+    }
+
+
+def test_sql_query_only_allows_single_selects_over_known_tables(tmp_path):
+    import pytest
+
+    from app.query import QueryService
+
+    service = QueryService(str(tmp_path))
+    for sql, message in [
+        ("DELETE FROM heart_rate", "read-only SELECT"),
+        ("SELECT * FROM users", "Unknown table"),
+        ("SELECT * FROM read_parquet('/etc/passwd')", "external data sources"),
+        ("SELECT read_text('/etc/passwd')", "is not allowed"),
+        ("SELECT 1; DROP TABLE heart_rate", "read-only SELECT"),
+        (
+            "WITH removed AS (DELETE FROM heart_rate RETURNING *) SELECT * FROM removed",
+            "Data-changing",
+        ),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            service.run_sql(sql)

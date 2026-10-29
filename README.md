@@ -2,14 +2,14 @@
 
 A local, end-to-end system that generates synthetic heart-rate, sleep, steps, workout, and weight data; lands and transforms it in object storage; and serves analytical queries over HTTP.
 
-> **Status:** The initial implementation is in place. Python tests can run locally; a Docker-enabled environment is required to verify the complete Compose startup path.
+> **Status:** The data pipeline, API, and local SQL workbench are implemented. The Compose stack has been run locally; automated Python tests cover generation, ETL, API routes, and query execution.
 
 ## Goals and scope
 
 - One-command local startup with Docker Compose and no cloud account or paid API.
 - Metric-specific synthetic data and schemas that preserve irregular sampling and missing observations.
 - Separate generator, ETL, object-storage, and read-only query responsibilities.
-- A validated HTTP query API (Bonus 1). Natural-language queries are deferred (Bonus 2).
+- A local SQL workbench and validated HTTP query API (Bonus 1). Natural-language queries are deferred (Bonus 2).
 
 This is a data engineering demonstration, not a medical product. All records and user IDs are synthetic; results are not medical advice or evidence of causal relationships.
 
@@ -93,7 +93,9 @@ docker compose up --build
 Do not run `down -v` if you want to retain generated data.
 If you change `DATA_SEED` or the generator's dataset layout, reset the volume before regenerating; object keys are stable across runs of the same configuration.
 
-### API examples
+### Bonus 1: HTTP query API
+
+The parameterized metric endpoints use structured filters, while the workbench accepts a restricted, read-only SQL `SELECT` over the five curated tables.
 
 Dates are UTC calendar dates, and `end_date` is inclusive. Identifiers must match `user-NNNN`.
 
@@ -107,7 +109,44 @@ curl 'http://localhost:8000/metrics/summary?user_id=user-0001&metrics=weight,ste
 - `GET /metrics/{metric}` returns records for `heart_rate`, `sleep`, `steps`, `workouts`, or `weight`. Results are bounded (`limit` 1–1,000).
 - `GET /metrics/summary` returns daily summaries for a comma-separated metric list; it defaults to all five. Weight appears only on measurement days, and absent observations are not interpolated.
 
-The API accepts filters, not arbitrary client SQL. It validates metric names, user IDs, date ordering, date-range bounds, and result limits. Validation errors are explicit HTTP errors.
+Both routes return a JSON object echoing the selected metric(s), user, date range, and results. The summary response also declares its daily grain. For example, a summary response has this shape:
+
+```json
+{
+  "user_id": "user-0001",
+  "start_date": "2025-01-01",
+  "end_date": "2025-01-07",
+  "metrics": ["heart_rate", "steps"],
+  "grain": "day",
+  "results": [
+    {
+      "date": "2025-01-01",
+      "heart_rate": {
+        "average_bpm": 65.2,
+        "min_bpm": 51,
+        "max_bpm": 92,
+        "observations": 270
+      },
+      "steps": {
+        "total_steps": 8612,
+        "buckets": 64
+      }
+    }
+  ]
+}
+```
+
+The API validates metric names, user IDs, date ordering, date-range bounds, and result limits. Invalid parameters return HTTP `422`; unsupported metric names on the records route return `404`. Unexpected storage or query failures are not disguised as successful responses. On startup, failure to download curated data prevents the API from becoming ready.
+
+### Local SQL workbench
+
+Open `http://localhost:8000` to use the browser-based workbench. The left catalog lists available tables and Parquet file counts. Right-click a table to preview rows, inspect its schema, or add a starter `SELECT` to the editor. Run a query with the button or `Ctrl+Enter`; results appear in a scrollable grid. The editor includes sample queries, including an example that joins steps and workouts.
+
+The workbench submits SQL to `POST /api/query` as JSON (`{"sql":"SELECT ... FROM heart_rate"}`) and returns the selected columns, rows, row count, and whether results were truncated. `GET /api/catalog`, `/api/catalog/{table}/schema`, and `/api/catalog/{table}/preview` support the catalog actions. Queries are capped at 1,000 returned rows and 20,000 characters.
+
+For safety, only one `SELECT` statement is accepted. It can read only the known curated tables (`heart_rate`, `sleep`, `steps`, `workouts`, `weight`); table functions, external file reads, non-allowlisted functions, DDL, and DML are rejected. SQL parse/validation and execution errors return HTTP `400` with a clear detail. Structured endpoint validation errors remain HTTP `422`. This is a local synthetic-data workbench, not an authenticated public SQL service.
+
+OpenAPI/Swagger documentation is available at `http://localhost:8000/docs`.
 
 ### Tests
 
@@ -128,7 +167,3 @@ Tests cover deterministic generation, distinct metric shapes, completion-marker 
 AI assistance was used for architecture exploration and implementation drafting. The initial single-metric proposal was broadened to all five metrics with different sampling shapes. The first local-files-only storage suggestion was changed to MinIO after discussing the value of demonstrating a service boundary. The implementation separates generator, ETL, storage, and API responsibilities while retaining batch ingestion for the small synthetic workload.
 
 I would not trust AI alone to establish that synthetic health data is physiologically valid, query results are correct, or deployment is secure. Those require explicit assumptions, tests against known data, and human review. The API's ephemeral cache instead of direct DuckDB-to-S3 querying is a deliberate tradeoff to avoid a runtime extension dependency; it should be revisited if data size grows. The Compose boot sequence still needs verification in a Docker-enabled environment.
-
-## If I had two more weeks
-
-I would add an automated clean-Compose integration test, then evaluate the generated distributions and query plans at a larger scale. After that, I would consider a narrowly scoped natural-language interface backed by fixed, validated query templates—not unrestricted generated SQL—and measure it against a representative question set before exposing it.

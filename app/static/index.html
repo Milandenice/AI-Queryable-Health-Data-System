@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Health Data Query Workbench</title>
+    <link rel="stylesheet" href="/static/workbench.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">Health Data <span>Workbench</span></a>
+      <div class="topbar-right">
+        <span class="connection"><i></i> Local DuckDB</span>
+        <a href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-heading">
+          <div>
+            <p class="eyebrow">CATALOG</p>
+            <h1>Tables</h1>
+          </div>
+          <button id="refresh-catalog" class="icon-button" title="Refresh tables" aria-label="Refresh tables">↻</button>
+        </div>
+        <p class="sidebar-hint">Right-click a table to preview rows or view its schema.</p>
+        <div id="table-list" class="table-list" aria-live="polite">
+          <div class="placeholder">Loading tables…</div>
+        </div>
+        <div class="sidebar-footer">
+          <span class="storage-dot"></span>
+          <span>Parquet · MinIO</span>
+        </div>
+      </aside>
+
+      <section class="main-panel">
+        <section class="editor-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">QUERY EDITOR</p>
+              <h2>Explore your data</h2>
+            </div>
+            <div class="editor-actions">
+              <label class="sr-only" for="example-query">Load an example query</label>
+              <select id="example-query">
+                <option value="">Examples</option>
+                <option value="heart-rate">Average heart rate by day</option>
+                <option value="steps">Daily steps and workouts</option>
+                <option value="weight">Weight measurements</option>
+              </select>
+              <button id="run-query" class="run-button"><span>▶</span> Run query</button>
+            </div>
+          </div>
+          <div class="editor-shell">
+            <div class="line-numbers" aria-hidden="true">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8</div>
+            <label class="sr-only" for="sql-editor">SQL query</label>
+            <textarea id="sql-editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="SQL query editor"></textarea>
+          </div>
+          <div class="editor-footnote"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to run <span>Read-only SQL · Results limited to 1,000 rows</span></div>
+        </section>
+
+        <section class="results-section">
+          <div class="results-heading">
+            <div>
+              <p class="eyebrow">OUTPUT</p>
+              <h2 id="result-title">Results</h2>
+            </div>
+            <div id="result-meta" class="result-meta"></div>
+          </div>
+          <div id="result-message" class="result-message">Run a query or preview a table to see results here.</div>
+          <div id="results-container" class="results-container" hidden></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="context-menu" class="context-menu" role="menu" hidden>
+      <button role="menuitem" data-action="preview">Preview rows</button>
+      <button role="menuitem" data-action="schema">Show schema</button>
+      <button role="menuitem" data-action="query">Select in editor</button>
+    </div>
+
+    <script src="/static/workbench.js" defer></script>
+  </body>
+</html>

@@ -40,6 +40,10 @@ def test_http_query_routes_validate_and_return_results(tmp_path):
     app.router.lifespan_context = test_lifespan
     try:
         with TestClient(app) as client:
+            workbench = client.get("/")
+            assert workbench.status_code == 200
+            assert "Health Data Query Workbench" in workbench.text
+
             response = client.get(
                 "/metrics/heart_rate",
                 params={
@@ -52,6 +56,46 @@ def test_http_query_routes_validate_and_return_results(tmp_path):
             assert response.status_code == 200
             assert response.json()["results"][0]["bpm"] == 72
 
+            catalog = client.get("/api/catalog")
+            assert catalog.status_code == 200
+            assert [table["name"] for table in catalog.json()["tables"]] == [
+                "heart_rate"
+            ]
+
+            schema = client.get("/api/catalog/heart_rate/schema")
+            assert schema.status_code == 200
+            assert schema.json()["columns"][0] == {
+                "name": "event_id",
+                "type": "string",
+            }
+
+            preview = client.get("/api/catalog/heart_rate/preview")
+            assert preview.status_code == 200
+            assert preview.json()["rows"][0]["bpm"] == 72
+
+            sql_result = client.post(
+                "/api/query",
+                json={
+                    "sql": "SELECT user_id, avg(bpm) AS average_bpm "
+                    "FROM heart_rate GROUP BY user_id"
+                },
+            )
+            assert sql_result.status_code == 200
+            assert sql_result.json()["rows"][0]["average_bpm"] == 72.0
+
+            summary = client.get(
+                "/metrics/summary",
+                params={
+                    "user_id": "user-0001",
+                    "start_date": day.isoformat(),
+                    "end_date": day.isoformat(),
+                    "metrics": "heart_rate",
+                },
+            )
+            assert summary.status_code == 200
+            assert summary.json()["grain"] == "day"
+            assert summary.json()["results"][0]["heart_rate"]["average_bpm"] == 72.0
+
             invalid = client.get(
                 "/metrics/unknown",
                 params={
@@ -61,5 +105,30 @@ def test_http_query_routes_validate_and_return_results(tmp_path):
                 },
             )
             assert invalid.status_code == 404
+
+            invalid_range = client.get(
+                "/metrics/heart_rate",
+                params={
+                    "user_id": "user-0001",
+                    "start_date": "2025-01-02",
+                    "end_date": "2025-01-01",
+                },
+            )
+            assert invalid_range.status_code == 422
+
+            invalid_user = client.get(
+                "/metrics/heart_rate",
+                params={
+                    "user_id": "not-a-user",
+                    "start_date": day.isoformat(),
+                    "end_date": day.isoformat(),
+                },
+            )
+            assert invalid_user.status_code == 422
+
+            forbidden_query = client.post(
+                "/api/query", json={"sql": "DROP TABLE heart_rate"}
+            )
+            assert forbidden_query.status_code == 400
     finally:
         app.router.lifespan_context = original_lifespan

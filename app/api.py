@@ -3,13 +3,23 @@ import re
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 
+import duckdb
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from app.query import METRICS, QueryService
 from app.storage import download_curated, s3_client
 
 USER_ID = re.compile(r"user-[0-9]{4}\Z")
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+class SQLQuery(BaseModel):
+    sql: str = Field(min_length=1, max_length=20000)
 
 
 @asynccontextmanager
@@ -28,6 +38,12 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def workbench():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 def _validate_user_id(user_id: str) -> None:
@@ -45,6 +61,56 @@ def _service(request: Request) -> QueryService:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/catalog")
+def catalog(request: Request):
+    return {"tables": _service(request).catalog()}
+
+
+@app.get("/api/catalog/{table_name}/schema")
+def table_schema(table_name: str, request: Request):
+    try:
+        return {
+            "table": table_name,
+            "columns": _service(request).table_schema(table_name),
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/catalog/{table_name}/preview")
+def table_preview(
+    table_name: str,
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    try:
+        result = _service(request).preview(table_name, limit)
+        return {
+            "table": table_name,
+            **result,
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except duckdb.Error as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/query")
+def execute_query(body: SQLQuery, request: Request):
+    try:
+        result = _service(request).run_sql(body.sql)
+        return {
+            "sql": body.sql,
+            **result,
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except duckdb.Error as error:
+        raise HTTPException(status_code=400, detail=f"Query failed: {error}") from error
 
 
 @app.get("/metrics/summary")

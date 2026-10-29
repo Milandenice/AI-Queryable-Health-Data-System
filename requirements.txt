@@ -2,4 +2,6 @@ boto3==1.38.23
 duckdb==1.2.2
 fastapi==0.115.12
 pyarrow==20.0.0
+pytz==2025.2
+sqlglot==26.16.4
 uvicorn[standard]==0.34.2
