@@ -121,6 +121,8 @@ def _validate_select(sql: str) -> str:
             )
 
     for function in expression.find_all(exp.Func):
+        if isinstance(function, (exp.And, exp.Or)):
+            continue
         if function.sql_name().upper() not in ALLOWED_FUNCTIONS:
             name = function.name or function.sql_name()
             raise ValueError(f"Function '{name}' is not allowed in queries")

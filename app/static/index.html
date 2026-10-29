@@ -36,6 +36,17 @@
 
       <section class="main-panel">
         <section class="editor-section">
+          <div class="nl-query-box">
+            <label for="question-input">
+              <span class="eyebrow">ASK IN PLAIN LANGUAGE</span>
+              <span class="nl-label">Ask your health data</span>
+            </label>
+            <div class="nl-query-row">
+              <input id="question-input" type="text" maxlength="1000" placeholder="e.g. What was user-0001's average resting heart rate last week?" autocomplete="off">
+              <button id="ask-query" class="ask-button"><span>✦</span> Ask AI</button>
+            </div>
+            <p class="nl-hint">Runs locally with an open model. Review the generated SQL before trusting the result.</p>
+          </div>
           <div class="section-heading">
             <div>
               <p class="eyebrow">QUERY EDITOR</p>

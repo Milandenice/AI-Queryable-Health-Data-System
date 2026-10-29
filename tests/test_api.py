@@ -5,12 +5,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
+from app import api as api_module
 from app.api import app
 from app.etl import METRIC_SCHEMAS
 from app.query import QueryService
 
 
-def test_http_query_routes_validate_and_return_results(tmp_path):
+def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:3b")
     day = date(2025, 1, 1)
     target = tmp_path / "heart_rate" / "event_date=2025-01-01" / "part-00000.parquet"
     target.parent.mkdir(parents=True)
@@ -130,5 +132,48 @@ def test_http_query_routes_validate_and_return_results(tmp_path):
                 "/api/query", json={"sql": "DROP TABLE heart_rate"}
             )
             assert forbidden_query.status_code == 400
+
+            def generated_sql(**kwargs):
+                assert kwargs["question"] == "average resting heart rate"
+                assert kwargs["reference_date"] == day
+                assert kwargs["model"] == "qwen2.5:3b"
+                return (
+                    "SELECT avg(bpm) AS average_bpm FROM heart_rate "
+                    "WHERE activity = 'rest'"
+                )
+
+            monkeypatch.setattr(api_module, "generate_sql", generated_sql)
+            nl_result = client.post(
+                "/api/nl-query", json={"question": "average resting heart rate"}
+            )
+            assert nl_result.status_code == 200
+            assert nl_result.json()["sql"].startswith("SELECT avg(bpm)")
+            assert nl_result.json()["rows"] == [{"average_bpm": 72.0}]
+            assert nl_result.json()["model"] == "qwen2.5:3b"
+
+            monkeypatch.setattr(
+                api_module, "generate_sql", lambda **kwargs: "DROP TABLE heart_rate"
+            )
+            rejected_nl_sql = client.post(
+                "/api/nl-query", json={"question": "remove the heart rate table"}
+            )
+            assert rejected_nl_sql.status_code == 502
+            assert (
+                "read-only query guard"
+                in rejected_nl_sql.json()["detail"]["message"]
+            )
+            assert rejected_nl_sql.json()["detail"]["sql"] == (
+                "DROP TABLE heart_rate"
+            )
+
+            def unavailable_model(**_kwargs):
+                raise api_module.ModelUnavailableError("Ollama is unavailable")
+
+            monkeypatch.setattr(api_module, "generate_sql", unavailable_model)
+            unavailable = client.post(
+                "/api/nl-query", json={"question": "show my recent steps"}
+            )
+            assert unavailable.status_code == 503
+            assert unavailable.json()["detail"] == "Ollama is unavailable"
     finally:
         app.router.lifespan_context = original_lifespan

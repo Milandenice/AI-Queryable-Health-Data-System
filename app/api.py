@@ -11,6 +11,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.nl_query import (
+    ModelResponseError,
+    ModelUnavailableError,
+    generate_sql,
+)
 from app.query import METRICS, QueryService
 from app.storage import download_curated, s3_client
 
@@ -20,6 +25,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 class SQLQuery(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
+
+
+class NaturalLanguageQuery(BaseModel):
+    question: str = Field(min_length=3, max_length=1000)
 
 
 @asynccontextmanager
@@ -111,6 +120,61 @@ def execute_query(body: SQLQuery, request: Request):
         raise HTTPException(status_code=400, detail=str(error)) from error
     except duckdb.Error as error:
         raise HTTPException(status_code=400, detail=f"Query failed: {error}") from error
+
+
+@app.post("/api/nl-query")
+def execute_natural_language_query(body: NaturalLanguageQuery, request: Request):
+    query_service = _service(request)
+    catalog = query_service.catalog()
+    if not catalog:
+        raise HTTPException(status_code=503, detail="No queryable tables are loaded")
+    reference_date = max(
+        date.fromisoformat(partition.name.removeprefix("event_date="))
+        for table in METRICS
+        for partition in (query_service.data_dir / table).glob("event_date=*")
+        if partition.is_dir()
+    )
+    model = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+    try:
+        sql = generate_sql(
+            question=body.question,
+            tables=catalog,
+            reference_date=reference_date,
+            endpoint=os.environ.get("OLLAMA_URL", "http://ollama:11434"),
+            model=model,
+        )
+    except ModelUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ModelResponseError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    try:
+        result = query_service.run_sql(sql)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": (
+                    "Generated SQL was rejected by the read-only query guard: "
+                    f"{error}"
+                ),
+                "sql": sql,
+            },
+        ) from error
+    except duckdb.Error as error:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"Generated SQL could not be executed: {error}",
+                "sql": sql,
+            },
+        ) from error
+    return {
+        "question": body.question,
+        "model": model,
+        "sql": sql,
+        **result,
+    }
 
 
 @app.get("/metrics/summary")

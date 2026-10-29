@@ -99,6 +99,12 @@ def test_duckdb_reads_records_and_aligns_daily_metric_summaries(tmp_path):
     assert sql_result["columns"] == ["user_id", "average_bpm"]
     assert sql_result["rows"] == [{"user_id": "user-0001", "average_bpm": 72.0}]
 
+    filtered_result = service.run_sql(
+        "SELECT bpm FROM heart_rate "
+        "WHERE activity = 'rest' AND bpm > 70 OR user_id = 'nobody'"
+    )
+    assert filtered_result["rows"] == [{"bpm": 72}]
+
     catalog = {table["name"]: table for table in service.catalog()}
     assert set(catalog) == {"heart_rate", "sleep", "steps", "workouts", "weight"}
     assert catalog["heart_rate"]["file_count"] == 1

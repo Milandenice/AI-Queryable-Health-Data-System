@@ -73,7 +73,12 @@ async function requestJson(url, options) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = payload.detail || `Request failed (${response.status})`;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    if (typeof detail === "object" && detail !== null) {
+      const error = new Error(detail.message || JSON.stringify(detail));
+      Object.assign(error, detail);
+      throw error;
+    }
+    throw new Error(detail);
   }
   return payload;
 }
@@ -188,7 +193,49 @@ async function runQuery() {
   }
 }
 
+async function askQuestion() {
+  const input = document.querySelector("#question-input");
+  const button = document.querySelector("#ask-query");
+  const question = input.value.trim();
+  if (!question) {
+    showMessage("Enter a question first.", true);
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  button.innerHTML = "<span>…</span> Thinking";
+  resultTitle.textContent = "Natural-language query";
+  resultMessage.hidden = false;
+  resultMessage.classList.remove("error");
+  resultMessage.textContent = "Asking the local model to generate a read-only query…";
+  resultsContainer.hidden = true;
+  const started = performance.now();
+  try {
+    const payload = await requestJson("/api/nl-query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    editor.value = payload.sql;
+    const elapsed = Math.round(performance.now() - started);
+    const suffix = payload.truncated ? " · limited to 1,000 rows" : "";
+    displayTable(
+      payload.columns,
+      payload.rows,
+      "Natural-language results",
+      `${payload.row_count} rows · ${elapsed} ms · ${payload.model}${suffix}`,
+    );
+  } catch (error) {
+    if (error.sql) editor.value = error.sql;
+    showMessage(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.innerHTML = "<span>✦</span> Ask AI";
+  }
+}
+
 document.querySelector("#run-query").addEventListener("click", runQuery);
+document.querySelector("#ask-query").addEventListener("click", askQuestion);
 document.querySelector("#refresh-catalog").addEventListener("click", loadCatalog);
 document.querySelector("#example-query").addEventListener("change", (event) => {
   if (examples[event.target.value]) editor.value = examples[event.target.value];
@@ -203,6 +250,12 @@ editor.addEventListener("keydown", (event) => {
     event.preventDefault();
     const start = editor.selectionStart;
     editor.setRangeText("  ", start, editor.selectionEnd, "end");
+  }
+});
+document.querySelector("#question-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    askQuestion();
   }
 });
 contextMenu.addEventListener("click", (event) => {

@@ -15,6 +15,45 @@ services:
       - data
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:0.6.8
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - data
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-model:
+    image: ollama/ollama:0.6.8
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if ollama show "$$OLLAMA_MODEL" >/dev/null 2>&1; then
+          echo "Model $$OLLAMA_MODEL is already downloaded"
+        else
+          ollama pull "$$OLLAMA_MODEL"
+        fi
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
   minio-init:
     image: health-data-minio-init:RELEASE.2025-08-13T08-35-41Z
     build:
@@ -78,6 +117,8 @@ services:
       S3_ACCESS_KEY: ${API_ACCESS_KEY:-health-api}
       S3_SECRET_KEY: ${API_SECRET_KEY:-local-api-secret}
       CURATED_BUCKET: health-curated
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
     ports:
       - "127.0.0.1:8000:8000"
     networks:
@@ -85,6 +126,8 @@ services:
       - edge
     depends_on:
       etl:
+        condition: service_completed_successfully
+      ollama-model:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -95,3 +138,4 @@ networks:
 
 volumes:
   minio_data:
+  ollama_data:
