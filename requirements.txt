@@ -1,0 +1,5 @@
+boto3==1.38.23
+duckdb==1.2.2
+fastapi==0.115.12
+pyarrow==20.0.0
+uvicorn[standard]==0.34.2
