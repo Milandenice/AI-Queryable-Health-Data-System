@@ -2,7 +2,9 @@ from datetime import date, datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
+from app.analytics import WEEKLY_FEATURE_SCHEMA
 from app.etl import METRIC_SCHEMAS
 from app.query import QueryService
 
@@ -133,3 +135,47 @@ def test_sql_query_only_allows_single_selects_over_known_tables(tmp_path):
     ]:
         with pytest.raises(ValueError, match=message):
             service.run_sql(sql)
+
+
+def test_query_service_returns_only_selected_user_weekly_metrics(tmp_path):
+    features_dir = (
+        tmp_path / "computed" / "weekly_features" / "event_week=2025-01-06"
+    )
+    features_dir.mkdir(parents=True)
+    records = []
+    for index in range(40):
+        records.append(
+            {
+                "user_id": f"user-{index + 1:04d}",
+                "week_start": date(2025, 1, 6),
+                "avg_resting_bpm": 80 - index,
+                "avg_daily_steps": 1000 + index * 100,
+                "avg_sleep_hours": 6 + index / 10,
+                "workout_count": index % 5,
+                "workout_minutes": index * 10,
+                "weight_kg": 80.0,
+                "weight_change_kg": index / 100,
+                "weight_change_days": 7,
+                "weight_change_kg_per_day": index / 700,
+            }
+        )
+    pq.write_table(
+        pa.Table.from_pylist(records, schema=WEEKLY_FEATURE_SCHEMA),
+        features_dir / "part-00000.parquet",
+    )
+
+    result = QueryService(str(tmp_path)).insights("user-0001")
+
+    assert result["user_id"] == "user-0001"
+    assert set(result) == {
+        "user_id",
+        "weekly",
+        "personal_analysis",
+        "weight_prediction",
+    }
+    assert len(result["weekly"]) == 1
+    assert result["weekly"][0]["avg_daily_steps"] == 1000
+    assert result["weight_prediction"]["status"] == "insufficient_data"
+    assert QueryService(str(tmp_path)).insight_users() == [
+        f"user-{index + 1:04d}" for index in range(40)
+    ]

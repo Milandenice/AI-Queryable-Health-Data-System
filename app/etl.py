@@ -8,6 +8,7 @@ from typing import Dict, List
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from app.analytics import build_weekly_features
 from app.storage import object_keys, read_json_object, s3_client, write_json_object
 
 RAW_COMPLETION_KEY = "_SUCCESS.json"
@@ -261,6 +262,7 @@ def run() -> None:
     client = s3_client()
     raw_bucket = os.environ.get("RAW_BUCKET", "health-raw")
     curated_bucket = os.environ.get("CURATED_BUCKET", "health-curated")
+    computed_bucket = os.environ.get("COMPUTED_BUCKET", "health-computed")
     raw_manifest = read_json_object(client, raw_bucket, RAW_COMPLETION_KEY)
     if raw_manifest is None:
         raise RuntimeError(
@@ -273,31 +275,38 @@ def run() -> None:
         if existing_manifest.get("source") != raw_manifest:
             raise RuntimeError(
                 "Existing curated data does not match the raw dataset. "
-                "Run 'docker compose down -v' to reset both buckets."
+                "Reset the MinIO data volume to regenerate the dataset."
             )
         print("Curated dataset is already complete; reusing existing objects.", flush=True)
-        return
+    else:
+        keys = sorted(object_keys(client, raw_bucket, "raw/"))
+        if not keys:
+            raise RuntimeError(f"No raw data objects found in bucket {raw_bucket}")
+        metrics_seen = set()
+        total = 0
+        for key in keys:
+            count = transform_object(client, raw_bucket, curated_bucket, key)
+            metrics_seen.add(key.split("/")[1])
+            total += count
+            print(f"Curated {count} records from {key}", flush=True)
+        missing = set(METRIC_SCHEMAS) - metrics_seen
+        if missing:
+            raise RuntimeError(f"Raw input is missing metric datasets: {sorted(missing)}")
+        existing_manifest = {
+            "source": raw_manifest,
+            "raw_objects": len(keys),
+            "records": total,
+        }
+        write_json_object(
+            client,
+            curated_bucket,
+            CURATED_COMPLETION_KEY,
+            existing_manifest,
+        )
+        print(f"ETL completed: {total} records across {len(keys)} objects", flush=True)
 
-    keys = sorted(object_keys(client, raw_bucket, "raw/"))
-    if not keys:
-        raise RuntimeError(f"No raw data objects found in bucket {raw_bucket}")
-    metrics_seen = set()
-    total = 0
-    for key in keys:
-        count = transform_object(client, raw_bucket, curated_bucket, key)
-        metrics_seen.add(key.split("/")[1])
-        total += count
-        print(f"Curated {count} records from {key}", flush=True)
-    missing = set(METRIC_SCHEMAS) - metrics_seen
-    if missing:
-        raise RuntimeError(f"Raw input is missing metric datasets: {sorted(missing)}")
-    write_json_object(
-        client,
-        curated_bucket,
-        CURATED_COMPLETION_KEY,
-        {"source": raw_manifest, "raw_objects": len(keys), "records": total},
-    )
-    print(f"ETL completed: {total} records across {len(keys)} objects", flush=True)
+    feature_rows = build_weekly_features(client, curated_bucket, computed_bucket)
+    print(f"Computed {feature_rows} user-week feature rows", flush=True)
 
 
 if __name__ == "__main__":

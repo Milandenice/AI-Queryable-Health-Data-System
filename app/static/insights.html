@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Health Data Insights</title>
+    <link rel="stylesheet" href="/static/insights.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">Health Data <span>Insights</span></a>
+      <nav>
+        <a href="/">SQL Workbench</a>
+        <a href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="login-panel" class="login-panel">
+        <div class="login-card">
+          <div class="app-mark" aria-hidden="true">H</div>
+          <p class="eyebrow">YOUR HEALTH DATA</p>
+          <h1>Welcome back</h1>
+          <p class="intro-copy">Choose a profile to view its personal health trends.</p>
+          <label class="user-picker" for="user-select">
+            <span>Select profile</span>
+            <select id="user-select" disabled>
+              <option>Loading profiles…</option>
+            </select>
+          </label>
+          <button id="open-dashboard" class="primary-button" disabled>View my dashboard</button>
+          <div id="login-status" class="status" role="status">Loading profiles…</div>
+        </div>
+      </section>
+
+      <div id="dashboard" hidden>
+        <section class="dashboard-header">
+          <div>
+            <p class="eyebrow">PERSONAL HEALTH OVERVIEW</p>
+            <h1 id="profile-title">Your weekly trends</h1>
+            <p class="intro-copy">A personal view of this synthetic profile’s recorded metrics.</p>
+          </div>
+          <button id="change-user" class="secondary-button">Change profile</button>
+        </section>
+        <div id="status" class="status" role="status"></div>
+
+        <section class="chart-panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">WEEKLY HISTORY</p>
+              <h2 id="chart-title">Weight over time</h2>
+            </div>
+            <label class="chart-picker" for="metric-select">
+              <span>Metric</span>
+              <select id="metric-select">
+                <option value="weight_kg">Weight</option>
+                <option value="avg_daily_steps">Steps / observed day</option>
+                <option value="avg_sleep_hours">Sleep / night</option>
+                <option value="workout_minutes">Workout minutes</option>
+                <option value="avg_resting_bpm">Resting heart rate</option>
+                <option value="weight_change_kg">Weight change</option>
+              </select>
+            </label>
+          </div>
+          <p id="chart-subtitle" class="chart-subtitle">Weekly weight readings; missing weigh-ins are left as gaps.</p>
+          <div id="chart-container" class="chart-container" aria-live="polite"></div>
+        </section>
+
+        <section class="profile-summary" aria-label="Personal summary">
+          <article class="summary-card">
+            <span>Latest weight</span>
+            <strong id="latest-weight">—</strong>
+          </article>
+          <article class="summary-card">
+            <span>Observed change</span>
+            <strong id="weight-change">—</strong>
+          </article>
+          <article class="summary-card">
+            <span>Average daily steps</span>
+            <strong id="average-steps">—</strong>
+          </article>
+          <article class="summary-card">
+            <span>Average sleep</span>
+            <strong id="average-sleep">—</strong>
+          </article>
+        </div>
+
+        <section class="analysis-grid" aria-label="Personal analysis">
+          <article class="analysis-panel">
+            <p class="eyebrow">PERSONAL PATTERNS</p>
+            <h2>Exploratory observations</h2>
+            <p id="personal-guidance" class="analysis-copy"></p>
+            <div id="personal-associations" class="association-list"></div>
+          </article>
+          <article class="analysis-panel">
+            <p class="eyebrow">MACHINE-LEARNING ESTIMATE</p>
+            <h2>Next-week weight-change estimate</h2>
+            <p id="prediction-value" class="prediction-value">Not available</p>
+            <p id="prediction-details" class="analysis-copy"></p>
+          </article>
+        </section>
+
+        <section class="analysis-panel cohort-panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">POPULATION-LEVEL VIEW</p>
+              <h2>Cross-profile associations</h2>
+            </div>
+          </div>
+          <p class="analysis-copy">
+            Correlations compare a week's metrics with the following week's weight-change rate.
+            They are exploratory associations, not causal effects.
+          </p>
+          <div id="cohort-associations" class="association-list"></div>
+          <div class="model-evaluation">
+            <h3>Model validation</h3>
+            <p id="model-evaluation" class="analysis-copy"></p>
+          </div>
+        </section>
+
+        <section class="data-notes">
+          <p id="weekly-count"></p>
+          <p>Gaps indicate weeks without a recorded value. All data and analyses are synthetic, exploratory, and not medical advice.</p>
+        </section>
+      </div>
+    </main>
+    <script src="/static/insights.js" defer></script>
+  </body>
+</html>

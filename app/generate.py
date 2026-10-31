@@ -18,8 +18,10 @@ RAW_COMPLETION_KEY = "_SUCCESS.json"
 @dataclass
 class UserProfile:
     user_id: str
+    pattern: str
     resting_bpm: float
     activity_factor: float
+    sleep_minutes: int
     weight_kg: float
     weight_trend: float
     weigh_interval: int
@@ -27,22 +29,38 @@ class UserProfile:
 
 
 def make_profiles(rng: random.Random, user_count: int) -> List[UserProfile]:
+    patterns = (
+        ["active_loss"] * (user_count // 3)
+        + ["stable"] * (user_count // 3)
+        + ["low_activity_gain"] * (user_count - 2 * (user_count // 3))
+    )
+    rng.shuffle(patterns)
     profiles = []
-    for index in range(user_count):
-        activity_factor = rng.uniform(0.65, 1.5)
-        if activity_factor > 1.15:
-            weight_direction = rng.choice((-1, -1, 0))
-        elif activity_factor < 0.85:
-            weight_direction = rng.choice((0, 1, 1))
+    for index, pattern in enumerate(patterns):
+        if pattern == "active_loss":
+            activity_factor = rng.uniform(1.15, 1.5)
+            resting_bpm = rng.uniform(54, 68)
+            sleep_minutes = rng.randint(440, 500)
+            weight_trend = -rng.uniform(0.012, 0.02)
+        elif pattern == "low_activity_gain":
+            activity_factor = rng.uniform(0.65, 0.9)
+            resting_bpm = rng.uniform(68, 82)
+            sleep_minutes = rng.randint(370, 430)
+            weight_trend = rng.uniform(0.012, 0.02)
         else:
-            weight_direction = rng.choice((-1, 0, 1))
+            activity_factor = rng.uniform(0.9, 1.15)
+            resting_bpm = rng.uniform(60, 75)
+            sleep_minutes = rng.randint(400, 470)
+            weight_trend = rng.uniform(-0.003, 0.003)
         profiles.append(
             UserProfile(
                 user_id=f"user-{index + 1:04d}",
-                resting_bpm=rng.uniform(55, 78),
+                pattern=pattern,
+                resting_bpm=resting_bpm,
                 activity_factor=activity_factor,
+                sleep_minutes=sleep_minutes,
                 weight_kg=rng.uniform(58, 112),
-                weight_trend=weight_direction * rng.uniform(0.006, 0.02),
+                weight_trend=weight_trend,
                 weigh_interval=rng.randint(1, 7),
                 next_weigh_day=0,
             )
@@ -65,7 +83,7 @@ def _sleep_events(profile: UserProfile, night_date: date, rng: random.Random) ->
         time(rng.randint(21, 23), rng.choice((0, 15, 30, 45))),
         tzinfo=timezone.utc,
     )
-    remaining = rng.randint(390, 510)
+    remaining = max(330, min(570, profile.sleep_minutes + rng.randint(-30, 30)))
     cycle = 0
     events = []
     while remaining > 0:
@@ -109,7 +127,12 @@ def _generate_day(
     output = {metric: [] for metric in METRICS}
     for profile in profiles:
         workouts: List[Tuple[datetime, datetime, str, str]] = []
-        if rng.random() < 0.12:
+        workout_probability = {
+            "active_loss": 0.22,
+            "stable": 0.12,
+            "low_activity_gain": 0.06,
+        }[profile.pattern]
+        if rng.random() < workout_probability:
             start = _at(day, rng.randint(7, 20), rng.choice((0, 15, 30, 45)))
             duration = rng.randint(25, 75)
             workout_end = start + timedelta(minutes=duration)
@@ -240,24 +263,43 @@ def run() -> None:
     client = s3_client()
     bucket = os.environ.get("S3_BUCKET", "health-raw")
     seed = int(os.environ.get("DATA_SEED", "2025"))
+    user_count = int(os.environ.get("DATA_USER_COUNT", str(USER_COUNT)))
+    day_count = int(os.environ.get("DATA_DAY_COUNT", str(DAY_COUNT)))
+    if not 1 <= user_count <= 9999 or not 1 <= day_count <= 3660:
+        raise ValueError(
+            "DATA_USER_COUNT must be between 1 and 9999 and "
+            "DATA_DAY_COUNT between 1 and 3660"
+        )
+    if user_count * day_count > 20000:
+        raise ValueError(
+            "DATA_USER_COUNT multiplied by DATA_DAY_COUNT cannot exceed 20000 "
+            "user-days for this local demo"
+        )
     manifest = {
-        "version": 1,
+        "version": 2,
         "seed": seed,
-        "users": USER_COUNT,
-        "days": DAY_COUNT,
+        "users": user_count,
+        "days": day_count,
         "start_date": START_DATE.isoformat(),
     }
     existing_manifest = read_json_object(client, bucket, RAW_COMPLETION_KEY)
     if existing_manifest is not None:
-        if existing_manifest != manifest:
+        same_dataset = all(
+            existing_manifest.get(key) == value
+            for key, value in manifest.items()
+            if key != "version"
+        )
+        if not same_dataset:
             raise RuntimeError(
                 "Existing raw data was generated with a different configuration. "
-                "Run 'docker compose down -v' to reset the dataset before changing it."
+                "Remove the existing MinIO data volume before changing the configuration."
             )
         print("Raw dataset is already complete; reusing existing objects.", flush=True)
         return
 
-    for day, batch in iter_batches(seed=seed):
+    for day, batch in iter_batches(
+        seed=seed, user_count=user_count, day_count=day_count
+    ):
         for metric, records in batch.items():
             if not records:
                 continue

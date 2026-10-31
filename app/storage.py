@@ -67,3 +67,22 @@ def download_curated(client, bucket: str, destination: str) -> int:
     if count == 0:
         raise RuntimeError(f"No curated Parquet objects found in bucket {bucket}")
     return count
+
+
+def download_computed(client, bucket: str, destination: str) -> int:
+    from pathlib import Path
+
+    root = Path(destination).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for key in object_keys(client, bucket, "weekly_features/"):
+        relative = Path(key)
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError("Object key escapes the computed cache directory")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        client.download_file(bucket, key, str(target))
+        count += 1
+    if count == 0:
+        raise RuntimeError(f"No computed feature objects found in bucket {bucket}")
+    return count

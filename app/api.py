@@ -17,7 +17,7 @@ from app.nl_query import (
     generate_sql,
 )
 from app.query import METRICS, QueryService
-from app.storage import download_curated, s3_client
+from app.storage import download_computed, download_curated, s3_client
 
 USER_ID = re.compile(r"user-[0-9]{4}\Z")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -34,10 +34,18 @@ class NaturalLanguageQuery(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cache_dir = tempfile.mkdtemp(prefix="health-data-curated-")
+    client = s3_client()
     bucket = os.environ.get("CURATED_BUCKET", "health-curated")
-    count = download_curated(s3_client(), bucket, cache_dir)
+    computed_bucket = os.environ.get("COMPUTED_BUCKET", "health-computed")
+    count = download_curated(client, bucket, cache_dir)
+    computed_count = download_computed(
+        client, computed_bucket, os.path.join(cache_dir, "computed")
+    )
     app.state.query_service = QueryService(cache_dir)
-    print(f"Loaded {count} curated objects from {bucket}", flush=True)
+    print(
+        f"Loaded {count} curated and {computed_count} computed objects",
+        flush=True,
+    )
     yield
 
 
@@ -53,6 +61,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/", include_in_schema=False)
 def workbench():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/insights", include_in_schema=False)
+def insights_page():
+    return FileResponse(STATIC_DIR / "insights.html")
 
 
 def _validate_user_id(user_id: str) -> None:
@@ -75,6 +88,35 @@ def health() -> dict:
 @app.get("/api/catalog")
 def catalog(request: Request):
     return {"tables": _service(request).catalog()}
+
+
+@app.get("/api/insights")
+def insights(
+    request: Request,
+    user_id: str = Query(pattern=r"^user-[0-9]{4}$"),
+):
+    try:
+        return _service(request).insights(user_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/insights/users")
+def insight_users(request: Request):
+    try:
+        return {"users": _service(request).insight_users()}
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/insights/cohort")
+def cohort_insights(request: Request):
+    try:
+        return _service(request).cohort_insights()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/catalog/{table_name}/schema")

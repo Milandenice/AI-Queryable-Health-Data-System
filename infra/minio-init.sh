@@ -13,6 +13,7 @@ done
 
 mc mb --ignore-existing local/health-raw
 mc mb --ignore-existing local/health-curated
+mc mb --ignore-existing local/health-computed
 
 for policy in generator etl api; do
   mc admin policy create local "$policy" "/infra/policies/$policy.json"

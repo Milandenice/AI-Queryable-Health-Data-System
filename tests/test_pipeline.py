@@ -1,4 +1,6 @@
 import json
+import random
+from statistics import correlation, mean
 from io import BytesIO
 from datetime import date
 from botocore.exceptions import ClientError
@@ -6,7 +8,7 @@ from botocore.exceptions import ClientError
 import pytest
 
 from app.etl import transform_object, validate_record
-from app.generate import iter_batches
+from app.generate import iter_batches, make_profiles
 from app.storage import read_json_object
 
 
@@ -25,6 +27,41 @@ def test_generation_is_deterministic_and_metric_shapes_differ():
         assert len(event_ids) == len(set(event_ids))
         for record in records:
             validate_record(metric, record, first[0][0])
+
+
+def test_synthetic_profiles_have_documented_directional_patterns():
+    profiles = make_profiles(random.Random(2025), 90)
+    groups = {
+        pattern: [profile for profile in profiles if profile.pattern == pattern]
+        for pattern in ("active_loss", "stable", "low_activity_gain")
+    }
+
+    assert all(len(group) == 30 for group in groups.values())
+    assert all(profile.weight_trend < 0 for profile in groups["active_loss"])
+    assert all(
+        abs(profile.weight_trend) <= 0.003 for profile in groups["stable"]
+    )
+    assert all(
+        profile.weight_trend > 0 for profile in groups["low_activity_gain"]
+    )
+
+    assert mean(p.activity_factor for p in groups["active_loss"]) > mean(
+        p.activity_factor for p in groups["stable"]
+    )
+    assert mean(p.activity_factor for p in groups["stable"]) > mean(
+        p.activity_factor for p in groups["low_activity_gain"]
+    )
+    assert mean(p.sleep_minutes for p in groups["active_loss"]) > mean(
+        p.sleep_minutes for p in groups["low_activity_gain"]
+    )
+    assert correlation(
+        [profile.activity_factor for profile in profiles],
+        [profile.weight_trend for profile in profiles],
+    ) < -0.8
+    assert correlation(
+        [profile.resting_bpm for profile in profiles],
+        [profile.weight_trend for profile in profiles],
+    ) > 0.8
 
 
 def test_sleep_stage_intervals_are_contiguous_and_match_durations():
@@ -148,6 +185,7 @@ def test_etl_skips_when_curated_marker_matches_raw_manifest(monkeypatch, capsys)
             return {"Body": BytesIO(json.dumps(next(self.reads)).encode())}
 
     monkeypatch.setattr(etl, "s3_client", FakeS3)
+    monkeypatch.setattr(etl, "build_weekly_features", lambda *_args: 320)
 
     def unexpected_object_listing(*args, **kwargs):
         raise AssertionError("ETL should skip before listing raw data")

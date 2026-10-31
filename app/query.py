@@ -7,6 +7,12 @@ import sqlglot
 from sqlglot import exp
 
 from app.etl import METRIC_SCHEMAS
+from app.insight_analysis import (
+    associations,
+    evaluate_model,
+    personal_analysis,
+    predict_user,
+)
 
 METRICS = {"heart_rate", "sleep", "steps", "workouts", "weight"}
 MAX_QUERY_LENGTH = 20000
@@ -158,6 +164,57 @@ class QueryService:
                 }
             )
         return tables
+
+    def _weekly_features_source(self) -> str:
+        feature_files = sorted(
+            (self.data_dir / "computed" / "weekly_features").glob(
+                "event_week=*/*.parquet"
+            )
+        )
+        if not feature_files:
+            raise RuntimeError("Computed weekly features are not available")
+        return (
+            self.data_dir / "computed" / "weekly_features" / "event_week=*" / "*.parquet"
+        ).as_posix()
+
+    def _weekly_feature_rows(self) -> List[Dict]:
+        source = self._weekly_features_source()
+        with duckdb.connect(":memory:") as connection:
+            connection.execute(
+                "CREATE VIEW weekly_features AS "
+                f"SELECT * FROM read_parquet('{source}', hive_partitioning=true)"
+            )
+            cursor = connection.execute(
+                "SELECT * FROM weekly_features ORDER BY user_id, week_start"
+            )
+            columns = [item[0] for item in connection.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def insight_users(self) -> List[str]:
+        return sorted({row["user_id"] for row in self._weekly_feature_rows()})
+
+    def insights(self, user_id: str) -> Dict:
+        all_rows = self._weekly_feature_rows()
+        weekly = [
+            {key: value for key, value in row.items() if key != "user_id"}
+            for row in all_rows
+            if row["user_id"] == user_id
+        ]
+        if not weekly:
+            raise FileNotFoundError(f"No insights are available for {user_id}")
+        return {
+            "user_id": user_id,
+            "weekly": weekly,
+            "personal_analysis": personal_analysis(all_rows, user_id),
+            "weight_prediction": predict_user(all_rows, user_id),
+        }
+
+    def cohort_insights(self) -> Dict:
+        rows = self._weekly_feature_rows()
+        return {
+            "associations": associations(rows),
+            "model_evaluation": evaluate_model(rows),
+        }
 
     def table_schema(self, table_name: str) -> List[Dict]:
         table = table_name.lower()

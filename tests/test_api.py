@@ -6,6 +6,7 @@ import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
 from app import api as api_module
+from app.analytics import WEEKLY_FEATURE_SCHEMA
 from app.api import app
 from app.etl import METRIC_SCHEMAS
 from app.query import QueryService
@@ -32,6 +33,29 @@ def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
         target,
     )
     service = QueryService(str(tmp_path))
+    features = tmp_path / "computed" / "weekly_features" / "event_week=2024-12-30"
+    features.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "user_id": "user-0001",
+                    "week_start": date(2024, 12, 30),
+                    "avg_resting_bpm": 72.0,
+                    "avg_daily_steps": 5000.0,
+                    "avg_sleep_hours": 7.0,
+                    "workout_count": 1,
+                    "workout_minutes": 30.0,
+                    "weight_kg": 80.5,
+                    "weight_change_kg": None,
+                    "weight_change_days": None,
+                    "weight_change_kg_per_day": None,
+                }
+            ],
+            schema=WEEKLY_FEATURE_SCHEMA,
+        ),
+        features / "part-00000.parquet",
+    )
 
     @asynccontextmanager
     async def test_lifespan(application):
@@ -45,6 +69,31 @@ def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
             workbench = client.get("/")
             assert workbench.status_code == 200
             assert "Health Data Query Workbench" in workbench.text
+            insights_page = client.get("/insights")
+            assert insights_page.status_code == 200
+            assert "Welcome back" in insights_page.text
+            assert 'id="weekly-rows"' not in insights_page.text
+
+            insight_users = client.get("/api/insights/users")
+            assert insight_users.status_code == 200
+            assert insight_users.json() == {"users": ["user-0001"]}
+
+            insights = client.get("/api/insights", params={"user_id": "user-0001"})
+            assert insights.status_code == 200
+            assert insights.json()["weekly"][0]["avg_daily_steps"] == 5000.0
+            assert insights.json()["weight_prediction"]["status"] == "insufficient_data"
+            assert insights.json()["personal_analysis"]["associations"]
+            assert set(insights.json()) == {
+                "user_id",
+                "weekly",
+                "personal_analysis",
+                "weight_prediction",
+            }
+
+            cohort = client.get("/api/insights/cohort")
+            assert cohort.status_code == 200
+            assert len(cohort.json()["associations"]) == 4
+            assert cohort.json()["model_evaluation"]["status"] == "insufficient_data"
 
             response = client.get(
                 "/metrics/heart_rate",

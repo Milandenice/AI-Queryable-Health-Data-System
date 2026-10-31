@@ -13,16 +13,31 @@
     },
     {
       "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::health-curated"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::health-curated/*"]
+    },
+    {
+      "Effect": "Allow",
       "Action": ["s3:PutObject"],
       "Resource": [
         "arn:aws:s3:::health-curated/*",
-        "arn:aws:s3:::health-curated/_SUCCESS.json"
+        "arn:aws:s3:::health-curated/_SUCCESS.json",
+        "arn:aws:s3:::health-computed/*",
+        "arn:aws:s3:::health-computed/_SUCCESS.json"
       ]
     },
     {
       "Effect": "Allow",
       "Action": ["s3:GetObject"],
-      "Resource": ["arn:aws:s3:::health-curated/_SUCCESS.json"]
+      "Resource": [
+        "arn:aws:s3:::health-curated/_SUCCESS.json",
+        "arn:aws:s3:::health-computed/_SUCCESS.json"
+      ]
     }
   ]
 }

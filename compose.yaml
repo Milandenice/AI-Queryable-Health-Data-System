@@ -86,6 +86,8 @@ services:
       S3_SECRET_KEY: ${GENERATOR_SECRET_KEY:-local-generator-secret}
       S3_BUCKET: health-raw
       DATA_SEED: ${DATA_SEED:-2025}
+      DATA_USER_COUNT: ${DATA_USER_COUNT:-100}
+      DATA_DAY_COUNT: ${DATA_DAY_COUNT:-30}
     networks:
       - data
     depends_on:
@@ -102,6 +104,7 @@ services:
       S3_SECRET_KEY: ${ETL_SECRET_KEY:-local-etl-secret}
       RAW_BUCKET: health-raw
       CURATED_BUCKET: health-curated
+      COMPUTED_BUCKET: health-computed
     networks:
       - data
     depends_on:
@@ -117,6 +120,7 @@ services:
       S3_ACCESS_KEY: ${API_ACCESS_KEY:-health-api}
       S3_SECRET_KEY: ${API_SECRET_KEY:-local-api-secret}
       CURATED_BUCKET: health-curated
+      COMPUTED_BUCKET: health-computed
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
     ports:
