@@ -15,17 +15,6 @@ FROM heart_rate
 WHERE user_id = 'user-0001'
 GROUP BY event_date
 ORDER BY event_date;`,
-  steps: `SELECT s.event_date, sum(s.steps) AS total_steps, count(DISTINCT w.event_id) AS workouts
-FROM steps AS s
-LEFT JOIN workouts AS w
-  ON s.user_id = w.user_id AND s.event_date = w.event_date
-WHERE s.user_id = 'user-0001'
-GROUP BY s.event_date
-ORDER BY s.event_date;`,
-  weight: `SELECT event_date, measured_at, weight_kg
-FROM weight
-WHERE user_id = 'user-0001'
-ORDER BY measured_at;`,
 };
 
 function showMessage(message, isError = false) {
@@ -104,7 +93,7 @@ async function loadCatalog() {
       name.textContent = table.name;
       const count = document.createElement("span");
       count.className = "table-count";
-      count.textContent = `${table.file_count} files`;
+      count.textContent = `${table.record_count.toLocaleString()} samples`;
       button.append(name, count);
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();

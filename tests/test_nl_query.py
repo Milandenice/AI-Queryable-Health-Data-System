@@ -32,14 +32,14 @@ def test_generate_sql_uses_local_model_and_dataset_date(monkeypatch):
         observed["url"] = request.full_url
         observed["timeout"] = timeout
         observed["body"] = json.loads(request.data)
-        return FakeResponse({"response": '{"sql":"SELECT count(*) FROM sleep"}'})
+        return FakeResponse({"response": '{"sql":"SELECT count(*) FROM heart_rate"}'})
 
     monkeypatch.setattr("app.nl_query.urlopen", fake_urlopen)
     sql = generate_sql(
-        question="How many sleep records are there?",
+        question="How many heart-rate records are there?",
         tables=[
             {
-                "name": "sleep",
+                "name": "heart_rate",
                 "columns": [{"name": "user_id", "type": "string"}],
             }
         ],
@@ -48,7 +48,7 @@ def test_generate_sql_uses_local_model_and_dataset_date(monkeypatch):
         model="qwen2.5:3b",
     )
 
-    assert sql == "SELECT count(*) FROM sleep"
+    assert sql == "SELECT count(*) FROM heart_rate"
     assert observed["url"] == "http://ollama:11434/api/generate"
     assert observed["timeout"] == 180
     assert observed["body"]["model"] == "qwen2.5:3b"
@@ -72,7 +72,7 @@ def test_generate_sql_rejects_malformed_model_responses(monkeypatch, payload):
         "app.nl_query.urlopen", lambda *_args, **_kwargs: FakeResponse(payload)
     )
     with pytest.raises(ModelResponseError):
-        generate_sql("show steps", [], date(2025, 1, 30), "http://ollama", "model")
+        generate_sql("show heart rate", [], date(2025, 1, 30), "http://ollama", "model")
 
 
 def test_generate_sql_reports_local_model_unavailable(monkeypatch):
@@ -81,4 +81,4 @@ def test_generate_sql_reports_local_model_unavailable(monkeypatch):
 
     monkeypatch.setattr("app.nl_query.urlopen", fail_request)
     with pytest.raises(ModelUnavailableError, match="Could not reach"):
-        generate_sql("show steps", [], date(2025, 1, 30), "http://ollama", "model")
+        generate_sql("show heart rate", [], date(2025, 1, 30), "http://ollama", "model")

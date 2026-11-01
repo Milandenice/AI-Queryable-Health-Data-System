@@ -22,7 +22,7 @@ def _prompt(question: str, tables: List[Dict], reference_date: date) -> str:
         )
         for table in tables
     )
-    return f"""Translate the user's question into exactly one DuckDB SQL SELECT query.
+    return f"""    Translate the user's question into exactly one SQLite-compatible SQL SELECT query.
 Return only a JSON object with one string property named "sql".
 
 Rules:
@@ -33,8 +33,10 @@ Rules:
 - Keep results useful and bounded; add LIMIT 100 unless the query is an aggregate.
 - User IDs have the form user-0001. Do not invent a user ID if none is specified.
 - The synthetic dataset's latest date is {reference_date.isoformat()}. Interpret relative periods such as "last week" relative to that date. If a month is given without a year, use the year of the dataset's latest date.
-- For resting heart rate, filter heart_rate.activity = 'rest'.
-- For disrupted sleep, summarize awake-stage minutes per user from sleep records.
+- `heart_rate` contains one row per sample. Columns include `user_id`, `observed_at`,
+  `event_date`, `bpm`, and `activity` (`rest`, `active`, or `workout`).
+- Use `date(observed_at)` or `event_date` to group readings by calendar date.
+- This database contains only heart-rate readings; do not reference other metrics.
 - Never infer causation from these synthetic data.
 
 User question:

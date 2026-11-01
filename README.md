@@ -1,187 +1,98 @@
-# AI-Queryable Health Data System
+# Heart-Rate Monitor
 
-A local, end-to-end system that generates synthetic heart-rate, sleep, steps, workout, and weight data; lands and transforms it in object storage; and serves analytical queries over HTTP.
+A local demonstration of continuous synthetic heart-rate generation, MQTT streaming, durable history, configurable sustained high/low alerts, and descriptive personal baselines. It also retains a read-only SQL workbench and local natural-language query path.
 
-> **Status:** The data pipeline, API, local SQL workbench, and local natural-language query path are implemented. Automated Python tests cover generation, ETL, API routes, and query execution.
-
-## Goals and scope
-
-- One-command local startup with Docker Compose and no cloud account or paid API.
-- Metric-specific synthetic data and schemas that preserve irregular sampling and missing observations.
-- Separate generator, ETL, object-storage, and read-only query responsibilities.
-- A local SQL workbench, validated HTTP query API (Bonus 1), and local natural-language query interface (Bonus 2).
-
-This is a data engineering demonstration, not a medical product. All records and user IDs are synthetic; results are not medical advice or evidence of causal relationships.
+> **Safety:** This is synthetic software, not a medical device or emergency monitor. Default alarm limits are illustrative settings, not medical recommendations. Personal baselines describe this generated profile; they are not an “optimal” range, diagnosis, or treatment advice.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U[Python generator<br/>metric-specific generators] -->|JSONL objects| R[(MinIO raw bucket)]
-    R -->|batch read| E[Python ETL job]
-    E -->|validated Parquet| C[(MinIO curated bucket)]
-    C -->|read-only download| L[API ephemeral local cache]
-    L --> Q[DuckDB embedded in API]
-    Q --> A[FastAPI query service]
-    Client -->|HTTP / JSON| A
-    A -->|private HTTP| M[Ollama + Qwen2.5 3B]
-    M -->|generated SQL| A
-    B[MinIO bootstrap job] -->|buckets, policies, users| R
-    B --> C
-    U -. job succeeds before ETL .-> E
-    E -. job succeeds before API .-> A
+    G[Continuous synthetic publisher<br/>1 sample / second] -->|MQTT QoS 1| M[(Mosquitto)]
+    M -->|health/heart_rate/user-NNNN| I[FastAPI MQTT subscriber]
+    I -->|validated sample + alarm state| D[(SQLite persistent volume)]
+    D -->|snapshot + live SSE| UI[Heart-rate monitor]
+    D -->|read-only SELECT| Q[SQL workbench]
+    Q -->|natural-language question| O[Local Ollama model]
+    O -->|generated SQL| Q
+    D --> B[Seven-day resting baseline]
 ```
 
-Compose runs MinIO, a MinIO bootstrap helper, one-shot generator and ETL jobs, the API, and a private Ollama service plus one-shot model-download job. The model job downloads Qwen2.5 3B on first startup; the model is kept in its own named Docker volume. Compose builds MinIO Community and its `mc` client from pinned upstream source releases because the old published Community image tags used by the initial Compose file are no longer pullable from Docker Hub. The bootstrap helper creates the raw and curated buckets plus separate service users and least-privilege policies. Compose waits for the one-shot jobs to complete successfully before starting the API.
+Compose starts Mosquitto, the API, and a continuous heart-rate generator. The API subscribes to the broker and writes each validated sample to SQLite. The monitor streams updates to the browser with Server-Sent Events. Alert settings, readings, and alert/recovery events survive container restarts in the `heart_rate_data` volume. The broker uses persistent storage and MQTT QoS 1; the subscriber deduplicates messages by event ID.
 
-The generator writes JSON Lines objects to MinIO's raw bucket. ETL validates each record and writes metric-specific Parquet objects to the curated bucket. The API downloads curated objects using read-only credentials at startup, then DuckDB queries those local Parquet files. MinIO stores data on a Docker named volume, so it persists across container recreation without cloud services or a separately installed database.
+Only heart-rate measurements are generated and stored. Each sample has an ID, synthetic profile ID, UTC timestamp, BPM, and a coarse activity label (`rest`, `active`, or `workout`). One profile streams by default; `SYNTHETIC_USER_ID` can change its ID. There is deliberately no step, sleep, workout-session, or weight stream.
 
-MinIO demonstrates a real storage boundary, but a separate container is not inherently safer. Isolation comes from separate credentials and policies: the generator writes raw data, ETL reads raw and writes curated, and the API reads curated only. The batch jobs, MinIO, and Ollama share a private internal Compose network. Ollama also joins the bridge network for outbound model downloads, but its API is not published to the host. The API joins that bridge network so Docker can publish its HTTP port; the MinIO console is published only on host loopback (`127.0.0.1:9001`), and the API only on host loopback (`127.0.0.1:8000`). MinIO's object API is not published to the host. Compose uses local-demo credentials by default so a clean start needs no manual setup. These defaults are for synthetic data only—do not expose the stack publicly or use it for real health data.
+### Why this stack
 
-To override the demo credentials, copy `.env.example` to `.env` and change the values before the first start. The example values are intentionally non-secret local defaults, not production credentials. If you change credentials after MinIO has already initialized its persistent volume, remove the volume with `docker compose down -v` before starting again so bootstrap can recreate the users.
+- **MQTT:** small, device-oriented publish/subscribe transport that fits a continuous wearable-style stream without introducing a larger event platform.
+- **SQLite:** a durable local store is simple for one synthetic device at 1 Hz, supports the SQL workbench, and avoids operating a separate database service. It is not sized or configured as a multi-device production time-series platform.
+- **Per-sample persistence:** incoming readings and alert transitions are committed immediately. A minute-level aggregate table makes the personal baseline inexpensive to recalculate without discarding raw readings.
+- **Sustained alarms:** 15 consecutive readings must be strictly above the high limit or below the low limit before an alert triggers. A reading back in range resets the consecutive count; timestamp gaps do not, because the rule is based on received measurements rather than elapsed wall-clock time.
+- **Local natural-language querying:** Ollama remains optional to the monitor’s readiness and runs locally. Generated SQL is constrained to one read-only query over `heart_rate`.
 
-## Data design
+The MQTT broker is only reachable on Compose's private network. The API is published on host loopback (`127.0.0.1:8000`). The demo broker allows anonymous clients on that private network; do not expose the broker or API publicly.
 
-The deterministic default workload contains **100 synthetic users over 30 days**, using seed `2025`. A single Python generator has independent metric-specific logic; the different sampling patterns do not need separate generator containers or streaming systems.
+## Run it
 
-| Metric | Shape and sampling | Curated fields |
-|---|---|---|
-| Heart rate | Five-minute samples while worn; one-minute workout samples; non-wear gaps; overnight patterns and workout recovery | `event_id`, `user_id`, `observed_at`, `bpm`, `activity` |
-| Sleep | One overnight record per user/night, represented as contiguous stage intervals | `event_id`, `user_id`, `night_date`, `start_at`, `end_at`, `stage`, `duration_minutes` |
-| Steps | Fifteen-minute daytime count buckets; zero counts retained while worn, non-wear periods omitted | `event_id`, `user_id`, `bucket_start`, `bucket_end`, `steps` |
-| Workouts | Occasional session intervals, with activity type and intensity | `event_id`, `user_id`, `start_at`, `end_at`, `activity_type`, `intensity`, `avg_heart_rate` |
-| Weight | Irregular weigh-ins, typically one to seven days apart; no fabricated interpolation | `event_id`, `user_id`, `measured_at`, `weight_kg` |
-
-Users receive illustrative gradual-loss, stable, or mild-gain weight trajectories and varying activity profiles. Workouts correlate with elevated heart rate and steps by construction; trends can be compared across profiles, but the synthetic associations do not demonstrate that activity caused weight change. Data is plausible enough for exercising queries, not a validated physiological simulator or statistically representative cohort.
-
-## Ingestion, storage, and query decisions
-
-- **Batch, not streaming:** each metric has a different natural cadence, but this bounded workload is generated locally and ingested as a complete run. A message broker or per-source streaming deployment adds complexity without useful latency or cost benefits. Live wearable feeds could later stream independently into the same validated storage contract.
-- **JSONL landing:** raw objects are inspectable and preserve each source's event shape.
-- **Metric-specific Parquet:** ETL validates records and stores each metric separately, partitioned by its natural UTC event date. Parquet is compact and efficient for columnar analytical scans. Partitioning by user would create unnecessary small files at this scale. Invalid records fail ETL with the object key and line number rather than being silently dropped.
-- **MinIO storage service:** local S3-compatible object storage makes the generator/ETL/query boundary explicit and can later be replaced by hosted object storage. Objects persist in a named Docker volume. No cloud account is required.
-- **MinIO image availability:** MinIO Community no longer provides the old prebuilt Docker Hub images used by this project originally. The Compose build compiles pinned upstream MinIO and `mc` source releases locally. This avoids missing-image pulls and makes the source version explicit, at the cost of a longer first build and requiring internet access to pull Go/Alpine base images and Go modules. MinIO Community is AGPL-licensed; see the upstream [MinIO license](https://github.com/minio/minio/blob/master/LICENSE) and [mc license](https://github.com/minio/mc/blob/master/LICENSE). This local demo is not a supported production deployment.
-- **DuckDB rather than PostgreSQL:** this workload is batch-generated, read-oriented analytics over Parquet. DuckDB runs in-process, scans Parquet directly, and avoids operating a database server and loading a second copy into tables. PostgreSQL would be preferable for frequent row updates, transactional workloads, or centralized concurrent application access; revisit that choice if those needs arise.
-- **Python application stack:** generation, validation, ETL, object-store access, DuckDB queries, and FastAPI are implemented in Python. MinIO is the separate storage service.
-- **API cache tradeoff:** Boto3 downloads the curated set to an ephemeral local directory when the API starts; DuckDB then reads local files. This avoids installing DuckDB's S3 extension at runtime and keeps query requests simple. Startup cost is proportional to the curated data size; direct S3 scans or an incremental cache would be more appropriate if the data grows substantially.
-
-## Run locally
-
-### Prerequisites
-
-- Docker Engine (or Docker Desktop) with the Compose plugin.
-- An available local port `8000` and enough disk for the Docker-managed MinIO volume.
-- Internet access on the first run to pull container images, build the Python image, and download the local model (about 2 GB).
-- Enough disk for the Docker images, generated dataset, and model; 8 GB of system memory is recommended for comfortable CPU inference.
-
-### Start
+Prerequisites: Docker Engine and the Docker Compose plugin. On first startup, Ollama may download the configured model (`qwen2.5:3b`), which requires disk space, memory, CPU time, and internet access.
 
 ```sh
-docker compose up
+sudo docker compose up --build
 ```
 
-On a clean machine, Compose builds the Python and MinIO images, starts MinIO and Ollama, initializes buckets and service credentials, generates raw data, runs ETL, downloads Qwen2.5 3B, then starts the API. First startup also downloads the model and can take several minutes; later starts reuse it. No `.env` file, manual model setup, cloud account, paid API, or separate database installation is required. The API is at `http://localhost:8000`, and the MinIO console is at `http://localhost:9001`, both bound to host loopback. Use `docker compose up --build` to force a rebuild after changing application code or dependencies.
+- Live monitor: <http://localhost:8000/monitor>
+- SQL workbench: <http://localhost:8000/>
+- API docs: <http://localhost:8000/docs>
 
-The MinIO console uses the root credentials `healthdata-admin` / `local-minio-root-password` by default. If configured in `.env`, use the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values instead.
+The monitor's default limits are low `<50 bpm`, high `>120 bpm`, with an alert after 15 consecutive out-of-range readings. Edit and save these values in the monitor; settings are stored per profile and persist across restarts. These are illustrative demo defaults only.
 
-The named MinIO volume preserves data when containers are recreated, and a separate Ollama volume preserves the downloaded model. The generator and ETL jobs write completion markers; when Compose reruns these one-shot containers after a restart, they detect a matching complete dataset and reuse it rather than regenerating or retransferring it. The bootstrap job reapplies the service policies on startup so policy changes are reflected in existing MinIO volumes. If generation is interrupted before its marker is written, the next run safely rewrites the same deterministic object keys and finishes the dataset.
+Useful environment overrides can be placed in `.env`:
 
-To intentionally delete all raw and curated data and start over:
-
-```sh
-docker compose down -v
-docker compose up --build
+```dotenv
+ALARM_LOW_BPM=50
+ALARM_HIGH_BPM=120
+ALARM_AFTER_SAMPLES=15
+SAMPLE_RATE_SECONDS=1
+SYNTHETIC_USER_ID=user-0001
+DATA_SEED=2025
+OLLAMA_MODEL=qwen2.5:3b
 ```
 
-Do not run `down -v` if you want to retain generated data.
-If you change `DATA_SEED` or the generator's dataset layout, reset the volume before regenerating; object keys are stable across runs of the same configuration.
-Adding the local model does not require deleting existing data volumes. Rebuild and start the updated services with `docker compose up --build`.
+The consecutive-reading threshold can be set from 1 to 300 samples and limits from 35 to 220 BPM, with low strictly below high. Stream cadence can be set from 0.1 to 2 seconds. Existing profiles keep their saved BPM limits; their old time-based alert duration is migrated to the configured default sample count on startup. A new `.env` default only initializes a profile's settings the first time that profile is created; afterward the saved settings take precedence. Existing values can be changed in the monitor.
 
-### Bonus 1: HTTP query API
+`docker compose down` stops the system but keeps its volumes. `docker compose down -v` deletes the heart-rate history, MQTT persistence, and the downloaded Ollama model. The stream is continuous while Compose is running, so SQLite will grow over time; the demo intentionally does not silently expire saved readings.
 
-The parameterized metric endpoints use structured filters, while the workbench accepts a restricted, read-only SQL `SELECT` over the five curated tables.
+## Monitor, history, and API
 
-Dates are UTC calendar dates, and `end_date` is inclusive. Identifiers must match `user-NNNN`.
+The monitor shows the latest sample, a rolling chart of the latest 60 readings (about one minute at the default sample rate), configured limits, and connection/staleness state. It raises a visual alert when the configured number of consecutive readings crosses a threshold. Trigger and recovery transitions are persisted and listed on the page.
 
-```sh
-curl http://localhost:8000/health
-curl 'http://localhost:8000/metrics/heart_rate?user_id=user-0001&start_date=2025-01-01&end_date=2025-01-02&limit=100'
-curl 'http://localhost:8000/metrics/summary?user_id=user-0001&metrics=weight,steps,workouts&start_date=2025-01-01&end_date=2025-01-30'
-```
+The personal baseline uses the last seven days of resting samples, first averaging readings into one-minute buckets. It displays the average, median, and 5th–95th percentile range when there is data. The interface describes what this profile has recorded; it does not claim that range is medically optimal. A current resting sample outside that recent band is shown as a descriptive observation only.
 
-- `GET /health` reports service liveness.
-- `GET /metrics/{metric}` returns records for `heart_rate`, `sleep`, `steps`, `workouts`, or `weight`. Results are bounded (`limit` 1–1,000).
-- `GET /metrics/summary` returns daily summaries for a comma-separated metric list; it defaults to all five. Weight appears only on measurement days, and absent observations are not interpolated.
+Useful routes:
 
-Both routes return a JSON object echoing the selected metric(s), user, date range, and results. The summary response also declares its daily grain. For example, a summary response has this shape:
+- `GET /api/monitor/users` — configured synthetic profiles.
+- `GET /api/monitor?user_id=user-0001` — latest reading, recent samples, settings, alarm state/events, and baseline.
+- `GET /api/monitor/stream?user_id=user-0001` — Server-Sent Events updates.
+- `PUT /api/monitor/settings` — save `user_id`, `low_bpm`, `high_bpm`, and `alert_after_samples`.
+- `GET /metrics/heart_rate` and `GET /metrics/summary` — bounded record and daily-summary APIs.
+- `POST /api/query` — read-only SQL against the persisted `heart_rate` table.
+- `POST /api/nl-query` — generate SQL with local Ollama, then validate and execute it through the same query guard.
 
-```json
-{
-  "user_id": "user-0001",
-  "start_date": "2025-01-01",
-  "end_date": "2025-01-07",
-  "metrics": ["heart_rate", "steps"],
-  "grain": "day",
-  "results": [
-    {
-      "date": "2025-01-01",
-      "heart_rate": {
-        "average_bpm": 65.2,
-        "min_bpm": 51,
-        "max_bpm": 92,
-        "observations": 270
-      },
-      "steps": {
-        "total_steps": 8612,
-        "buckets": 64
-      }
-    }
-  ]
-}
-```
+The query workbench allows a single `SELECT` over `heart_rate` and caps results at 1,000 rows. It is a local synthetic-data tool, not an authenticated multi-user database.
 
-The API validates metric names, user IDs, date ordering, date-range bounds, and result limits. Invalid parameters return HTTP `422`; unsupported metric names on the records route return `404`. Unexpected storage or query failures are not disguised as successful responses. On startup, failure to download curated data prevents the API from becoming ready.
-
-### Local SQL workbench
-
-Open `http://localhost:8000` to use the browser-based workbench. The left catalog lists available tables and Parquet file counts. Right-click a table to preview rows, inspect its schema, or add a starter `SELECT` to the editor. Ask a plain-language question in the natural-language panel; the generated SQL appears in the editor and results appear below. Run a query with the button or `Ctrl+Enter`; results appear in a scrollable grid. The editor includes sample queries, including an example that joins steps and workouts.
-
-The workbench submits SQL to `POST /api/query` as JSON (`{"sql":"SELECT ... FROM heart_rate"}`) and returns the selected columns, rows, row count, and whether results were truncated. `GET /api/catalog`, `/api/catalog/{table}/schema`, and `/api/catalog/{table}/preview` support the catalog actions. Queries are capped at 1,000 returned rows and 20,000 characters.
-
-For safety, only one `SELECT` statement is accepted. It can read only the known curated tables (`heart_rate`, `sleep`, `steps`, `workouts`, `weight`); table functions, external file reads, non-allowlisted functions, DDL, and DML are rejected. SQL parse/validation and execution errors return HTTP `400` with a clear detail. Structured endpoint validation errors remain HTTP `422`. This is a local synthetic-data workbench, not an authenticated public SQL service.
-
-OpenAPI/Swagger documentation is available at `http://localhost:8000/docs`.
-
-### Bonus 2: local natural-language query
-
-`POST /api/nl-query` accepts `{"question":"What was user-0001's average resting heart rate last week?"}` and returns the question, model name, generated SQL, columns, rows, row count, and truncation status. Relative dates are interpreted against the latest date in the loaded dataset. The API sends the question and table schema to the local Ollama service, then submits the generated SQL through the same SQL parser, allowlist, and 1,000-row cap as manual queries. Model unavailability returns HTTP `503`; malformed model output or SQL rejected by validation returns HTTP `502`. A successful response is not a guarantee that the question was interpreted correctly: inspect the SQL and results.
-
-```sh
-curl -X POST http://localhost:8000/api/nl-query \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"What was user-0001 average resting heart rate last week?"}'
-```
-
-The default model is `qwen2.5:3b`, configured through `OLLAMA_MODEL` in `.env` or the environment. It runs locally on CPU without an API key, account, or per-request fee. Model weights require an initial download (about 2 GB), disk space, memory, and CPU time; response latency depends on the machine. Ollama has no published host port; the API reaches it over the Compose network. Qwen2.5 is published under Apache-2.0 terms; see the upstream [Qwen2.5 license](https://github.com/QwenLM/Qwen2.5/blob/main/LICENSE) and [Ollama model page](https://ollama.com/library/qwen2.5). Verify applicable license terms before redistribution or commercial use.
-
-### Tests
+## Tests
 
 ```sh
 python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Tests cover deterministic generation, distinct metric shapes, completion-marker reuse on restart, ETL validation, DuckDB record and cross-metric summary queries, and mocked local-model request/response behavior. The full Compose path and the example requests should additionally be smoke-tested on a machine with Docker installed.
+Tests cover deterministic stream generation, persisted ingestion, alert timing and recovery, gap handling, personal-baseline aggregation, SQL validation, API behavior, and mocked local-model requests.
 
-## Areas of depth
+## AI usage and areas of depth
 
-1. **Metric-aware data modeling:** points, intervals, count buckets, and sparse measurements remain distinct; cross-metric summaries align by day without inventing missing measurements.
-2. **Reproducible, bounded ingestion:** a fixed seed, visible JSONL-to-Parquet stages, validation, date partitioning, and least-privilege service identities make the pipeline inspectable.
+AI assistance was used for implementation drafting, test design, and architecture exploration. The system was redirected from a batch multi-metric pipeline to a heart-rate-only live stream. The implementation uses MQTT as the transport and SQLite as the local durable history rather than carrying forward the old MinIO/Parquet batch path. I would not trust AI alone to choose clinically appropriate alarm thresholds, validate physiological realism, or certify an emergency-monitoring product; those need qualified clinical input, device validation, and operational safety engineering.
 
-## AI usage
+The deeper parts are the sustained-alarm state machine (including gaps, recovery, and durable events) and the explicitly descriptive personal baseline over long-running persisted data.
 
-AI assistance was used for architecture exploration and implementation drafting. The initial single-metric proposal was broadened to all five metrics with different sampling shapes. The first local-files-only storage suggestion was changed to MinIO after discussing the value of demonstrating a service boundary. The implementation separates generator, ETL, storage, and API responsibilities while retaining batch ingestion for the small synthetic workload.
-
-I would not trust AI alone to establish that synthetic health data is physiologically valid, generated SQL answers the question, query results are correct, or deployment is secure. Those require explicit assumptions, tests against known data, and human review. The API's ephemeral cache instead of direct DuckDB-to-S3 querying is a deliberate tradeoff to avoid a runtime extension dependency; it should be revisited if data size grows.
-
-If I had two more weeks, I would add a user-facing query history with saved, human-reviewed examples; benchmark and tune the local model against a fixed set of natural-language questions; and add explicit semantic checks for date ranges and aggregation intent. I would also load-test concurrent queries and decide whether the API's startup cache should become incremental as the dataset grows.
+If I had two more weeks, I would add a real device adapter behind the same MQTT event contract, evaluate storage/retention options under realistic long-duration load, and have qualified clinicians review alarm behavior and the presentation of personal baselines before making any claims beyond this synthetic demo.

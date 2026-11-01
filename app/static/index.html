@@ -3,14 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Health Data Query Workbench</title>
+    <title>Heart Rate Query Workbench</title>
     <link rel="stylesheet" href="/static/workbench.css">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/">Health Data <span>Workbench</span></a>
+      <a class="brand" href="/">Heart Rate <span>Workbench</span></a>
       <div class="topbar-right">
-        <span class="connection"><i></i> Local DuckDB</span>
+        <span class="connection"><i></i> Live SQLite history</span>
+        <a href="/monitor">Live monitor ↗</a>
         <a href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
       </div>
     </header>
@@ -24,13 +25,13 @@
           </div>
           <button id="refresh-catalog" class="icon-button" title="Refresh tables" aria-label="Refresh tables">↻</button>
         </div>
-        <p class="sidebar-hint">Right-click a table to preview rows or view its schema.</p>
+        <p class="sidebar-hint">Right-click the heart-rate table to preview rows or view its schema.</p>
         <div id="table-list" class="table-list" aria-live="polite">
           <div class="placeholder">Loading tables…</div>
         </div>
         <div class="sidebar-footer">
           <span class="storage-dot"></span>
-          <span>Parquet · MinIO</span>
+          <span>SQLite · MQTT stream</span>
         </div>
       </aside>
 
@@ -39,10 +40,10 @@
           <div class="nl-query-box">
             <label for="question-input">
               <span class="eyebrow">ASK IN PLAIN LANGUAGE</span>
-              <span class="nl-label">Ask your health data</span>
+              <span class="nl-label">Ask your heart-rate history</span>
             </label>
             <div class="nl-query-row">
-              <input id="question-input" type="text" maxlength="1000" placeholder="e.g. What was user-0001's average resting heart rate last week?" autocomplete="off">
+              <input id="question-input" type="text" maxlength="1000" placeholder="e.g. What was user-0001's average resting heart rate yesterday?" autocomplete="off">
               <button id="ask-query" class="ask-button"><span>✦</span> Ask AI</button>
             </div>
             <p class="nl-hint">Runs locally with an open model. Review the generated SQL before trusting the result.</p>
@@ -50,15 +51,13 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">QUERY EDITOR</p>
-              <h2>Explore your data</h2>
+              <h2>Explore your heart-rate data</h2>
             </div>
             <div class="editor-actions">
               <label class="sr-only" for="example-query">Load an example query</label>
               <select id="example-query">
                 <option value="">Examples</option>
                 <option value="heart-rate">Average heart rate by day</option>
-                <option value="steps">Daily steps and workouts</option>
-                <option value="weight">Weight measurements</option>
               </select>
               <button id="run-query" class="run-button"><span>▶</span> Run query</button>
             </div>

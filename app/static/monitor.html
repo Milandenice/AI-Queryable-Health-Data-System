@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Live Heart Rate Monitor</title>
+    <link rel="stylesheet" href="/static/monitor.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/monitor">Pulse <span>Monitor</span></a>
+      <nav>
+        <a href="/">SQL workbench</a>
+        <a href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">CONTINUOUS HEART-RATE STREAM</p>
+          <h1>Live monitor</h1>
+          <p class="muted">Synthetic readings are streamed every second and saved as they arrive.</p>
+        </div>
+        <div class="profile-picker">
+          <label for="user-select">Monitor profile</label>
+          <select id="user-select" disabled>
+            <option>Loading…</option>
+          </select>
+        </div>
+      </section>
+
+      <section id="alarm-banner" class="alarm-banner" role="alert" hidden>
+        <strong id="alarm-title"></strong>
+        <span id="alarm-message"></span>
+      </section>
+
+      <section class="monitor-grid">
+        <article class="panel live-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CURRENT READING</p>
+              <h2>Heart rate</h2>
+            </div>
+            <span id="stream-status" class="stream-status">Connecting…</span>
+          </div>
+          <div class="reading">
+            <strong id="current-bpm">—</strong>
+            <span>bpm</span>
+          </div>
+          <div id="chart" class="chart" aria-live="off"></div>
+          <div class="chart-legend">
+            <span><i class="legend-line"></i>Heart rate</span>
+            <span><i class="legend-low"></i>Low limit</span>
+            <span><i class="legend-high"></i>High limit</span>
+          </div>
+        </article>
+
+        <article class="panel settings-panel">
+          <p class="eyebrow">ALARM SETTINGS</p>
+          <h2>Configure limits</h2>
+          <p class="muted">Alert after a limit is crossed continuously for the selected duration.</p>
+          <form id="settings-form">
+            <label>
+              Low limit (bpm)
+              <input id="low-bpm" name="low_bpm" type="number" min="35" max="219" required>
+            </label>
+            <label>
+              High limit (bpm)
+              <input id="high-bpm" name="high_bpm" type="number" min="36" max="220" required>
+            </label>
+            <label>
+              Consecutive readings
+              <input id="alert-after" name="alert_after_samples" type="number" min="1" max="300" required>
+            </label>
+            <button type="submit" class="primary-button">Save alert settings</button>
+            <p id="settings-status" class="form-status" role="status"></p>
+          </form>
+          <div class="demo-note">
+            <strong>Illustrative defaults</strong>
+            <span>50 / 120 bpm are demo starting points, not medical guidance. Choose limits appropriate to your context.</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="lower-grid">
+        <article class="panel baseline-panel">
+          <p class="eyebrow">PERSONAL HISTORY</p>
+          <h2>Your recent resting baseline</h2>
+          <p id="baseline-summary" class="muted">Collecting resting readings…</p>
+          <div id="personal-context" class="personal-context"></div>
+          <p class="disclaimer">Based on this synthetic profile’s past seven days of resting readings. Descriptive history only—not an optimal range, diagnosis, or medical advice.</p>
+        </article>
+        <article class="panel events-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">PERSISTED HISTORY</p>
+              <h2>Recent alarm events</h2>
+            </div>
+            <span class="muted">Trigger and recovery</span>
+          </div>
+          <div id="alarm-events" class="alarm-events">
+            <p class="muted">No alarm events recorded.</p>
+          </div>
+        </article>
+      </section>
+
+      <p class="footer-note">Synthetic demonstration only. This is not a medical device and cannot provide emergency monitoring.</p>
+    </main>
+    <script src="/static/monitor.js" defer></script>
+  </body>
+</html>

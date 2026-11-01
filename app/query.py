@@ -1,83 +1,33 @@
+import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-import duckdb
 import sqlglot
 from sqlglot import exp
 
-from app.etl import METRIC_SCHEMAS
+from app.heart_rate_store import HeartRateStore
 
-METRICS = {"heart_rate", "sleep", "steps", "workouts", "weight"}
+METRICS = {"heart_rate"}
 MAX_QUERY_LENGTH = 20000
 MAX_QUERY_ROWS = 1000
 ALLOWED_FUNCTIONS = {
     "ABS",
     "AVG",
+    "CAST",
     "COALESCE",
     "COUNT",
-    "CURRENT_DATE",
-    "CURRENT_TIMESTAMP",
-    "DATE_DIFF",
-    "DATE_PART",
-    "DATE_TRUNC",
-    "EXTRACT",
-    "GREATEST",
-    "LEAST",
+    "DATE",
+    "DATETIME",
     "LOWER",
     "MAX",
     "MIN",
-    "NULLIF",
     "ROUND",
-    "STDDEV",
+    "STRFTIME",
     "SUM",
-    "TIMESTAMP_TRUNC",
+    "TIME",
     "UPPER",
 }
-SUMMARY_QUERIES = {
-    "heart_rate": """
-        SELECT event_date AS day, round(avg(bpm), 1) AS average_bpm,
-               min(bpm) AS min_bpm, max(bpm) AS max_bpm, count(*) AS observations
-        FROM {source}
-        WHERE user_id = ? AND event_date BETWEEN ? AND ?
-        GROUP BY event_date
-    """,
-    "steps": """
-        SELECT event_date AS day, sum(steps) AS total_steps, count(*) AS buckets
-        FROM {source}
-        WHERE user_id = ? AND event_date BETWEEN ? AND ?
-        GROUP BY event_date
-    """,
-    "sleep": """
-        SELECT night_date AS day,
-               sum(duration_minutes) FILTER (WHERE stage != 'awake') AS sleep_minutes,
-               sum(duration_minutes) FILTER (WHERE stage = 'awake') AS awake_minutes
-        FROM {source}
-        WHERE user_id = ? AND night_date BETWEEN ? AND ?
-        GROUP BY night_date
-    """,
-    "workouts": """
-        SELECT event_date AS day, count(*) AS workout_count,
-               round(sum(date_diff('second', start_at, end_at)) / 60.0, 1)
-                   AS workout_minutes,
-               round(avg(avg_heart_rate), 1) AS average_workout_bpm
-        FROM {source}
-        WHERE user_id = ? AND event_date BETWEEN ? AND ?
-        GROUP BY event_date
-    """,
-    "weight": """
-        SELECT event_date AS day, arg_max(weight_kg, measured_at) AS weight_kg,
-               count(*) AS weigh_ins
-        FROM {source}
-        WHERE user_id = ? AND event_date BETWEEN ? AND ?
-        GROUP BY event_date
-    """,
-}
-
-
-def _source(data_dir: Path, metric: str) -> str:
-    pattern = (data_dir / metric / "event_date=*" / "*.parquet").as_posix()
-    return f"read_parquet('{pattern}', hive_partitioning=true)"
 
 
 def _validate_dates(start_date: date, end_date: date) -> None:
@@ -93,7 +43,7 @@ def _validate_select(sql: str) -> str:
     if len(sql) > MAX_QUERY_LENGTH:
         raise ValueError(f"Query cannot exceed {MAX_QUERY_LENGTH} characters")
     try:
-        statements = sqlglot.parse(sql, read="duckdb")
+        statements = sqlglot.parse(sql, read="sqlite")
     except sqlglot.errors.ParseError as error:
         raise ValueError(f"Invalid SQL: {error}") from error
     if len(statements) != 1 or not isinstance(statements[0], exp.Select):
@@ -105,10 +55,7 @@ def _validate_select(sql: str) -> str:
         for node in expression.walk()
     ):
         raise ValueError("Data-changing or administrative statements are not allowed")
-    cte_names = {
-        cte.alias_or_name.lower()
-        for cte in expression.find_all(exp.CTE)
-    }
+    cte_names = {cte.alias_or_name.lower() for cte in expression.find_all(exp.CTE)}
     for table in expression.find_all(exp.Table):
         if not isinstance(table.this, exp.Identifier):
             raise ValueError("Table functions and external data sources are not allowed")
@@ -117,7 +64,7 @@ def _validate_select(sql: str) -> str:
         table_name = table.name.lower()
         if table_name not in METRICS and table_name not in cte_names:
             raise ValueError(
-                f"Unknown table '{table.name}'. Available tables: {', '.join(sorted(METRICS))}"
+                f"Unknown table '{table.name}'. Available tables: heart_rate"
             )
 
     for function in expression.find_all(exp.Func):
@@ -127,86 +74,74 @@ def _validate_select(sql: str) -> str:
             name = function.name or function.sql_name()
             raise ValueError(f"Function '{name}' is not allowed in queries")
 
-    return expression.sql(dialect="duckdb")
+    return expression.sql(dialect="sqlite")
 
 
 class QueryService:
-    def __init__(self, data_dir: str):
-        self.data_dir = Path(data_dir).resolve()
-        if not self.data_dir.is_dir():
-            raise RuntimeError(f"Curated data cache is missing: {self.data_dir}")
+    def __init__(self, database_path: str):
+        self.database_path = Path(database_path).resolve()
+        if not self.database_path.is_file():
+            raise RuntimeError(f"Heart-rate database is missing: {self.database_path}")
 
     def catalog(self) -> List[Dict]:
-        tables = []
-        for metric in sorted(METRICS):
-            files = sorted(
-                (self.data_dir / metric).glob("event_date=*/*.parquet")
-            )
-            if not files:
-                continue
-            schema = METRIC_SCHEMAS[metric]
-            columns = [
-                {"name": field.name, "type": str(field.type)}
-                for field in schema
-            ]
-            columns.append({"name": "event_date", "type": "DATE"})
-            tables.append(
-                {
-                    "name": metric,
-                    "columns": columns,
-                    "file_count": len(files),
-                }
-            )
-        return tables
+        with sqlite3.connect(
+            f"file:{self.database_path.as_posix()}?mode=ro", uri=True
+        ) as connection:
+            columns = connection.execute("PRAGMA table_info(heart_rate)").fetchall()
+            count = connection.execute("SELECT count(*) FROM heart_rate").fetchone()[0]
+        if not columns:
+            return []
+        return [
+            {
+                "name": "heart_rate",
+                "columns": [
+                    {"name": row[1], "type": row[2]}
+                    for row in columns
+                ],
+                "record_count": count,
+            }
+        ]
 
     def table_schema(self, table_name: str) -> List[Dict]:
         table = table_name.lower()
         if table not in METRICS:
             raise ValueError(f"Unknown table '{table_name}'")
-        match = next(
-            (item for item in self.catalog() if item["name"] == table),
-            None,
-        )
-        if match is None:
+        catalog = self.catalog()
+        if not catalog:
             raise FileNotFoundError(f"No data is available for table '{table_name}'")
-        return match["columns"]
+        return catalog[0]["columns"]
 
     def preview(self, table_name: str, limit: int = 20) -> Dict:
         table = table_name.lower()
         if table not in METRICS:
             raise ValueError(f"Unknown table '{table_name}'")
-        rows = self.run_sql(f"SELECT * FROM {table} LIMIT {limit}")
-        return rows
+        if not 1 <= limit <= 100:
+            raise ValueError("Preview limit must be between 1 and 100")
+        return self.run_sql(f"SELECT * FROM {table} LIMIT {limit}")
 
     def run_sql(self, sql: str) -> Dict:
         statement = _validate_select(sql)
-        with duckdb.connect(":memory:") as connection:
-            for metric in METRICS:
-                files = list(
-                    (self.data_dir / metric).glob("event_date=*/*.parquet")
+        try:
+            with sqlite3.connect(
+                f"file:{self.database_path.as_posix()}?mode=ro", uri=True
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+                cursor = connection.execute(
+                    f"SELECT * FROM ({statement}) AS _query_result LIMIT ?",
+                    (MAX_QUERY_ROWS + 1,),
                 )
-                if not files:
-                    continue
-                parquet_glob = (self.data_dir / metric / "event_date=*/*.parquet").as_posix()
-                connection.execute(
-                    f"CREATE VIEW {metric} AS "
-                    f"SELECT * FROM read_parquet('{parquet_glob}', "
-                    "hive_partitioning=true)"
-                )
-            cursor = connection.execute(
-                f"SELECT * FROM ({statement}) AS _query_result LIMIT ?",
-                [MAX_QUERY_ROWS + 1],
-            )
-            columns = [column[0] for column in cursor.description]
-            rows = cursor.fetchall()
-            truncated = len(rows) > MAX_QUERY_ROWS
-            rows = rows[:MAX_QUERY_ROWS]
-            return {
-                "columns": columns,
-                "rows": [dict(zip(columns, row)) for row in rows],
-                "row_count": len(rows),
-                "truncated": truncated,
-            }
+                rows = cursor.fetchall()
+                columns = [item[0] for item in cursor.description]
+        except sqlite3.Error as error:
+            raise ValueError(f"Query failed: {error}") from error
+        truncated = len(rows) > MAX_QUERY_ROWS
+        rows = rows[:MAX_QUERY_ROWS]
+        return {
+            "columns": columns,
+            "rows": [dict(row) for row in rows],
+            "row_count": len(rows),
+            "truncated": truncated,
+        }
 
     def records(
         self,
@@ -219,31 +154,23 @@ class QueryService:
         if metric not in METRICS:
             raise ValueError(f"Unsupported metric: {metric}")
         _validate_dates(start_date, end_date)
-        fields = {
-            "heart_rate": "event_id, user_id, observed_at, bpm, activity",
-            "sleep": "event_id, user_id, night_date, start_at, end_at, stage, duration_minutes",
-            "steps": "event_id, user_id, bucket_start, bucket_end, steps",
-            "workouts": "event_id, user_id, start_at, end_at, activity_type, intensity, avg_heart_rate",
-            "weight": "event_id, user_id, measured_at, weight_kg",
-        }[metric]
-        date_field = {
-            "heart_rate": "event_date",
-            "sleep": "night_date",
-            "steps": "event_date",
-            "workouts": "event_date",
-            "weight": "event_date",
-        }[metric]
-        sql = (
-            f"SELECT {fields} FROM {_source(self.data_dir, metric)} "
-            f"WHERE user_id = ? AND {date_field} BETWEEN ? AND ? "
-            f"ORDER BY {date_field} LIMIT ?"
-        )
-        with duckdb.connect(":memory:") as connection:
-            cursor = connection.execute(
-                sql, [user_id, start_date, end_date, limit]
-            )
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        HeartRateStore.validate_user_id(user_id)
+        with sqlite3.connect(
+            f"file:{self.database_path.as_posix()}?mode=ro", uri=True
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT event_id, user_id, observed_at, bpm, activity
+                FROM heart_rate
+                WHERE user_id = ? AND event_date BETWEEN ? AND ?
+                ORDER BY observed_at_ms DESC LIMIT ?
+                """,
+                (user_id, start_date.isoformat(), end_date.isoformat(), limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def summary(
         self,
@@ -255,16 +182,32 @@ class QueryService:
         _validate_dates(start_date, end_date)
         if not metrics or any(metric not in METRICS for metric in metrics):
             raise ValueError("metrics must contain supported metric names")
-        by_day: Dict[date, Dict] = {}
-        with duckdb.connect(":memory:") as connection:
-            for metric in metrics:
-                sql = SUMMARY_QUERIES[metric].format(source=_source(self.data_dir, metric))
-                cursor = connection.execute(
-                    sql, [user_id, start_date, end_date]
-                )
-                columns = [column[0] for column in cursor.description]
-                for row in cursor.fetchall():
-                    values = dict(zip(columns, row))
-                    day = values.pop("day")
-                    by_day.setdefault(day, {"date": day.isoformat()})[metric] = values
-        return [by_day[day] for day in sorted(by_day)]
+        HeartRateStore.validate_user_id(user_id)
+        with sqlite3.connect(
+            f"file:{self.database_path.as_posix()}?mode=ro", uri=True
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT event_date AS date, round(avg(bpm), 1) AS average_bpm,
+                       min(bpm) AS min_bpm, max(bpm) AS max_bpm,
+                       count(*) AS observations
+                FROM heart_rate
+                WHERE user_id = ? AND event_date BETWEEN ? AND ?
+                GROUP BY event_date
+                ORDER BY event_date
+                """,
+                (user_id, start_date.isoformat(), end_date.isoformat()),
+            ).fetchall()
+        return [
+            {
+                "date": row["date"],
+                "heart_rate": {
+                    "average_bpm": row["average_bpm"],
+                    "min_bpm": row["min_bpm"],
+                    "max_bpm": row["max_bpm"],
+                    "observations": row["observations"],
+                },
+            }
+            for row in rows
+        ]
