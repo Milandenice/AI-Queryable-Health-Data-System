@@ -12,7 +12,7 @@ from app.query import QueryService
 
 
 def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:1.5b")
     day = date(2025, 1, 1)
     target = tmp_path / "heart_rate" / "event_date=2025-01-01" / "part-00000.parquet"
     target.parent.mkdir(parents=True)
@@ -136,7 +136,7 @@ def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
             def generated_sql(**kwargs):
                 assert kwargs["question"] == "average resting heart rate"
                 assert kwargs["reference_date"] == day
-                assert kwargs["model"] == "qwen2.5:3b"
+                assert kwargs["model"] == "qwen2.5-coder:1.5b"
                 return (
                     "SELECT avg(bpm) AS average_bpm FROM heart_rate "
                     "WHERE activity = 'rest'"
@@ -149,7 +149,7 @@ def test_http_query_routes_validate_and_return_results(tmp_path, monkeypatch):
             assert nl_result.status_code == 200
             assert nl_result.json()["sql"].startswith("SELECT avg(bpm)")
             assert nl_result.json()["rows"] == [{"average_bpm": 72.0}]
-            assert nl_result.json()["model"] == "qwen2.5:3b"
+            assert nl_result.json()["model"] == "qwen2.5-coder:1.5b"
 
             monkeypatch.setattr(
                 api_module, "generate_sql", lambda **kwargs: "DROP TABLE heart_rate"

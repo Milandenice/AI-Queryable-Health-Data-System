@@ -14,10 +14,12 @@ MAX_QUERY_ROWS = 1000
 ALLOWED_FUNCTIONS = {
     "ABS",
     "AVG",
+    "CAST",
     "COALESCE",
     "COUNT",
     "CURRENT_DATE",
     "CURRENT_TIMESTAMP",
+    "DATE",
     "DATE_DIFF",
     "DATE_PART",
     "DATE_TRUNC",

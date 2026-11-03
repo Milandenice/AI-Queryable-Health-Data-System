@@ -45,16 +45,24 @@ def test_generate_sql_uses_local_model_and_dataset_date(monkeypatch):
         ],
         reference_date=date(2025, 1, 30),
         endpoint="http://ollama:11434/",
-        model="qwen2.5:3b",
+        model="qwen2.5-coder:1.5b",
     )
 
     assert sql == "SELECT count(*) FROM sleep"
     assert observed["url"] == "http://ollama:11434/api/generate"
     assert observed["timeout"] == 180
-    assert observed["body"]["model"] == "qwen2.5:3b"
+    assert observed["body"]["model"] == "qwen2.5-coder:1.5b"
     assert observed["body"]["stream"] is False
     assert observed["body"]["format"] == "json"
     assert "2025-01-30" in observed["body"]["prompt"]
+    assert "Use DuckDB SQL syntax only" in observed["body"]["prompt"]
+    assert "do not wrap them in DATE(...)" in observed["body"]["prompt"]
+    assert "Do not use DATE_SUB" in observed["body"]["prompt"]
+    assert (
+        "event_date BETWEEN DATE '2025-01-21' AND DATE '2025-01-30'"
+        in observed["body"]["prompt"]
+    )
+    assert "never use CURRENT_DATE" in observed["body"]["prompt"]
     assert "user_id string" in observed["body"]["prompt"]
 
 

@@ -134,7 +134,7 @@ def execute_natural_language_query(body: NaturalLanguageQuery, request: Request)
         for partition in (query_service.data_dir / table).glob("event_date=*")
         if partition.is_dir()
     )
-    model = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+    model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:1.5b")
     try:
         sql = generate_sql(
             question=body.question,

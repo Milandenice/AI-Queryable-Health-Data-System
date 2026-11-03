@@ -4,14 +4,16 @@ A local, end-to-end system that generates synthetic heart-rate, sleep, steps, wo
 
 > **Status:** The data pipeline, API, local SQL workbench, and local natural-language query path are implemented. Automated Python tests cover generation, ETL, API routes, and query execution.
 
-## Goals and scope
+## Goals and scope for take home
 
 - One-command local startup with Docker Compose and no cloud account or paid API.
 - Metric-specific synthetic data and schemas that preserve irregular sampling and missing observations.
 - Separate generator, ETL, object-storage, and read-only query responsibilities.
 - A local SQL workbench, validated HTTP query API (Bonus 1), and local natural-language query interface (Bonus 2).
 
-This is a data engineering demonstration, not a medical product. All records and user IDs are synthetic; results are not medical advice or evidence of causal relationships.
+## Reasoning for architectural choices
+
+My perceived outcome of this take home was the following: A standalone app that is capable of computing the relation between heart-rate, sleep, steps and workout on one side and weight on the other. This app could be used to inform and help users how their habits influence their weight and what they can change in order to achieve their weight goals
 
 ## Architecture
 
@@ -24,7 +26,7 @@ flowchart LR
     L --> Q[DuckDB embedded in API]
     Q --> A[FastAPI query service]
     Client -->|HTTP / JSON| A
-    A -->|private HTTP| M[Ollama + Qwen2.5 3B]
+    A -->|private HTTP| M[Ollama + Qwen2.5-Coder 1.5B]
     M -->|generated SQL| A
     B[MinIO bootstrap job] -->|buckets, policies, users| R
     B --> C
@@ -32,17 +34,15 @@ flowchart LR
     E -. job succeeds before API .-> A
 ```
 
-Compose runs MinIO, a MinIO bootstrap helper, one-shot generator and ETL jobs, the API, and a private Ollama service plus one-shot model-download job. The model job downloads Qwen2.5 3B on first startup; the model is kept in its own named Docker volume. Compose builds MinIO Community and its `mc` client from pinned upstream source releases because the old published Community image tags used by the initial Compose file are no longer pullable from Docker Hub. The bootstrap helper creates the raw and curated buckets plus separate service users and least-privilege policies. Compose waits for the one-shot jobs to complete successfully before starting the API.
+Compose runs MinIO, a MinIO bootstrap helper, one-shot generator and ETL jobs, the API, and a private Ollama service plus one-shot model-download job. The model job downloads Qwen2.5-Coder 1.5B on first startup; the model is kept in its own named Docker volume. The bootstrap helper creates the raw and curated buckets plus separate service users and least-privilege policies. Compose waits for the one-shot jobs to complete successfully before starting the API.
 
-The generator writes JSON Lines objects to MinIO's raw bucket. ETL validates each record and writes metric-specific Parquet objects to the curated bucket. The API downloads curated objects using read-only credentials at startup, then DuckDB queries those local Parquet files. MinIO stores data on a Docker named volume, so it persists across container recreation without cloud services or a separately installed database.
+The generator writes JSON Lines objects to MinIO's raw bucket. ETL validates each record and writes metric-specific Parquet objects to the curated bucket. The API downloads curated objects using read-only credentials at startup, then DuckDB queries those local Parquet files. MinIO stores data on a seperate Docker volume, so it persists across container recreation without cloud services or a separately installed database.
 
-MinIO demonstrates a real storage boundary, but a separate container is not inherently safer. Isolation comes from separate credentials and policies: the generator writes raw data, ETL reads raw and writes curated, and the API reads curated only. The batch jobs, MinIO, and Ollama share a private internal Compose network. Ollama also joins the bridge network for outbound model downloads, but its API is not published to the host. The API joins that bridge network so Docker can publish its HTTP port; the MinIO console is published only on host loopback (`127.0.0.1:9001`), and the API only on host loopback (`127.0.0.1:8000`). MinIO's object API is not published to the host. Compose uses local-demo credentials by default so a clean start needs no manual setup. These defaults are for synthetic data only—do not expose the stack publicly or use it for real health data.
-
-To override the demo credentials, copy `.env.example` to `.env` and change the values before the first start. The example values are intentionally non-secret local defaults, not production credentials. If you change credentials after MinIO has already initialized its persistent volume, remove the volume with `docker compose down -v` before starting again so bootstrap can recreate the users.
+In my choice to have one single docker volume for the data, I considered the following: MinIO demonstrates a real storage boundary, but a separate container is not inherently safer. Isolation comes from separate credentials and policies: the generator writes raw data, ETL reads raw and writes curated, and the API reads curated only. The batch jobs, MinIO, and Ollama share a private internal Compose network. Ollama also joins the bridge network for outbound model downloads, but its API is not published to the host. The API joins that bridge network so Docker can publish its HTTP port; the MinIO console is published only on host (`127.0.0.1:9001`), and the API only on host (`127.0.0.1:8000`). MinIO's object API is not published to the host. Compose uses local-demo credentials by default so a clean start needs no manual setup.
 
 ## Data design
 
-The deterministic default workload contains **100 synthetic users over 30 days**, using seed `2025`. A single Python generator has independent metric-specific logic; the different sampling patterns do not need separate generator containers or streaming systems.
+The deterministic default workload contains **100 synthetic users over 30 days**, using start date `2025-01-01`. A single Python generator has independent metric-specific logic; the different sampling patterns do not need separate generator containers or streaming systems.
 
 | Metric | Shape and sampling | Curated fields |
 |---|---|---|
@@ -52,17 +52,15 @@ The deterministic default workload contains **100 synthetic users over 30 days**
 | Workouts | Occasional session intervals, with activity type and intensity | `event_id`, `user_id`, `start_at`, `end_at`, `activity_type`, `intensity`, `avg_heart_rate` |
 | Weight | Irregular weigh-ins, typically one to seven days apart; no fabricated interpolation | `event_id`, `user_id`, `measured_at`, `weight_kg` |
 
-Users receive illustrative gradual-loss, stable, or mild-gain weight trajectories and varying activity profiles. Workouts correlate with elevated heart rate and steps by construction; trends can be compared across profiles, but the synthetic associations do not demonstrate that activity caused weight change. Data is plausible enough for exercising queries, not a validated physiological simulator or statistically representative cohort.
+Users receive illustrative gradual-loss, stable, or mild-gain weight trajectories and varying activity profiles. Workouts correlate with elevated heart rate and steps by construction; trends can be compared across profiles. Data is plausible enough for exercising queries.
 
 ## Ingestion, storage, and query decisions
 
 - **Batch, not streaming:** each metric has a different natural cadence, but this bounded workload is generated locally and ingested as a complete run. A message broker or per-source streaming deployment adds complexity without useful latency or cost benefits. Live wearable feeds could later stream independently into the same validated storage contract.
 - **JSONL landing:** raw objects are inspectable and preserve each source's event shape.
-- **Metric-specific Parquet:** ETL validates records and stores each metric separately, partitioned by its natural UTC event date. Parquet is compact and efficient for columnar analytical scans. Partitioning by user would create unnecessary small files at this scale. Invalid records fail ETL with the object key and line number rather than being silently dropped.
-- **MinIO storage service:** local S3-compatible object storage makes the generator/ETL/query boundary explicit and can later be replaced by hosted object storage. Objects persist in a named Docker volume. No cloud account is required.
-- **MinIO image availability:** MinIO Community no longer provides the old prebuilt Docker Hub images used by this project originally. The Compose build compiles pinned upstream MinIO and `mc` source releases locally. This avoids missing-image pulls and makes the source version explicit, at the cost of a longer first build and requiring internet access to pull Go/Alpine base images and Go modules. MinIO Community is AGPL-licensed; see the upstream [MinIO license](https://github.com/minio/minio/blob/master/LICENSE) and [mc license](https://github.com/minio/mc/blob/master/LICENSE). This local demo is not a supported production deployment.
+- **Metric-specific Parquet:** ETL validates records and stores each metric separately, partitioned by its natural UTC event date. Parquet is compact and efficient for columnar analytical scans. Invalid records fail ETL with the object key and line number rather than being silently dropped.
 - **DuckDB rather than PostgreSQL:** this workload is batch-generated, read-oriented analytics over Parquet. DuckDB runs in-process, scans Parquet directly, and avoids operating a database server and loading a second copy into tables. PostgreSQL would be preferable for frequent row updates, transactional workloads, or centralized concurrent application access; revisit that choice if those needs arise.
-- **Python application stack:** generation, validation, ETL, object-store access, DuckDB queries, and FastAPI are implemented in Python. MinIO is the separate storage service.
+- **Python application stack:** generation, validation, ETL, object-store access, DuckDB queries, and FastAPI are implemented in Python. MinIO is the separate storage service. We chose not to use PySpark, because we don't have a lot of data and because we are working locally on one machine. In the case we need to use distributed processing on multiple workers, we can make the change from python to pyspark.
 - **API cache tradeoff:** Boto3 downloads the curated set to an ephemeral local directory when the API starts; DuckDB then reads local files. This avoids installing DuckDB's S3 extension at runtime and keeps query requests simple. Startup cost is proportional to the curated data size; direct S3 scans or an incremental cache would be more appropriate if the data grows substantially.
 
 ## Run locally
@@ -71,7 +69,7 @@ Users receive illustrative gradual-loss, stable, or mild-gain weight trajectorie
 
 - Docker Engine (or Docker Desktop) with the Compose plugin.
 - An available local port `8000` and enough disk for the Docker-managed MinIO volume.
-- Internet access on the first run to pull container images, build the Python image, and download the local model (about 2 GB).
+- Internet access on the first run to pull container images, build the Python image, and download the local model.
 - Enough disk for the Docker images, generated dataset, and model; 8 GB of system memory is recommended for comfortable CPU inference.
 
 ### Start
@@ -80,11 +78,11 @@ Users receive illustrative gradual-loss, stable, or mild-gain weight trajectorie
 docker compose up
 ```
 
-On a clean machine, Compose builds the Python and MinIO images, starts MinIO and Ollama, initializes buckets and service credentials, generates raw data, runs ETL, downloads Qwen2.5 3B, then starts the API. First startup also downloads the model and can take several minutes; later starts reuse it. No `.env` file, manual model setup, cloud account, paid API, or separate database installation is required. The API is at `http://localhost:8000`, and the MinIO console is at `http://localhost:9001`, both bound to host loopback. Use `docker compose up --build` to force a rebuild after changing application code or dependencies.
+On a clean machine, Compose builds the Python and MinIO images, starts MinIO and Ollama, initializes buckets and service credentials, generates raw data, runs ETL, downloads Qwen2.5-Coder 1.5B, then starts the API. First startup also downloads the model and can take several minutes; later starts reuse it. No `.env` file, manual model setup, cloud account, paid API, or separate database installation is required. The API is at `http://localhost:8000`, and the MinIO console is at `http://localhost:9001`, both bound to host loopback. Use `docker compose up --build` to force a rebuild after changing application code or dependencies.
 
 The MinIO console uses the root credentials `healthdata-admin` / `local-minio-root-password` by default. If configured in `.env`, use the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values instead.
 
-The named MinIO volume preserves data when containers are recreated, and a separate Ollama volume preserves the downloaded model. The generator and ETL jobs write completion markers; when Compose reruns these one-shot containers after a restart, they detect a matching complete dataset and reuse it rather than regenerating or retransferring it. The bootstrap job reapplies the service policies on startup so policy changes are reflected in existing MinIO volumes. If generation is interrupted before its marker is written, the next run safely rewrites the same deterministic object keys and finishes the dataset.
+The MinIO volume preserves data when containers are recreated, and a separate Ollama volume preserves the downloaded model. The generator and ETL jobs write completion markers; when Compose reruns these one-shot containers after a restart, they detect a matching complete dataset and reuse it rather than regenerating or retransferring it. The bootstrap job reapplies the service policies on startup so policy changes are reflected in existing MinIO volumes. If generation is interrupted before its marker is written, the next run safely rewrites the same deterministic object keys and finishes the dataset.
 
 To intentionally delete all raw and curated data and start over:
 
@@ -148,13 +146,13 @@ Open `http://localhost:8000` to use the browser-based workbench. The left catalo
 
 The workbench submits SQL to `POST /api/query` as JSON (`{"sql":"SELECT ... FROM heart_rate"}`) and returns the selected columns, rows, row count, and whether results were truncated. `GET /api/catalog`, `/api/catalog/{table}/schema`, and `/api/catalog/{table}/preview` support the catalog actions. Queries are capped at 1,000 returned rows and 20,000 characters.
 
-For safety, only one `SELECT` statement is accepted. It can read only the known curated tables (`heart_rate`, `sleep`, `steps`, `workouts`, `weight`); table functions, external file reads, non-allowlisted functions, DDL, and DML are rejected. SQL parse/validation and execution errors return HTTP `400` with a clear detail. Structured endpoint validation errors remain HTTP `422`. This is a local synthetic-data workbench, not an authenticated public SQL service.
+For safety, only one `SELECT` statement is accepted. It can read only the known curated tables (`heart_rate`, `sleep`, `steps`, `workouts`, `weight`); table functions, external file reads, non-allowlisted functions, Data Definition Language, and Data Manipulation Language are rejected. SQL parse/validation and execution errors return HTTP `400` with a clear detail. Structured endpoint validation errors remain HTTP `422`.
 
 OpenAPI/Swagger documentation is available at `http://localhost:8000/docs`.
 
 ### Bonus 2: local natural-language query
 
-`POST /api/nl-query` accepts `{"question":"What was user-0001's average resting heart rate last week?"}` and returns the question, model name, generated SQL, columns, rows, row count, and truncation status. Relative dates are interpreted against the latest date in the loaded dataset. The API sends the question and table schema to the local Ollama service, then submits the generated SQL through the same SQL parser, allowlist, and 1,000-row cap as manual queries. Model unavailability returns HTTP `503`; malformed model output or SQL rejected by validation returns HTTP `502`. A successful response is not a guarantee that the question was interpreted correctly: inspect the SQL and results.
+`POST /api/nl-query` accepts `{"question":"What was user-0001's average resting heart rate last week?"}` and returns the question, model name, generated SQL, columns, rows, row count, and truncation status. Relative dates are interpreted against the latest date in the loaded dataset. The model is prompted to use DuckDB SQL (not MySQL or PostgreSQL syntax) and to filter date partition columns directly using date literals. The API then submits the generated SQL through the same SQL parser, allowlist, and 1,000-row cap as manual queries. Model unavailability returns HTTP `503`; malformed model output or SQL rejected by validation returns HTTP `502`. A successful response is not a guarantee that the question was interpreted correctly: inspect the SQL and results.
 
 ```sh
 curl -X POST http://localhost:8000/api/nl-query \
@@ -162,7 +160,7 @@ curl -X POST http://localhost:8000/api/nl-query \
   -d '{"question":"What was user-0001 average resting heart rate last week?"}'
 ```
 
-The default model is `qwen2.5:3b`, configured through `OLLAMA_MODEL` in `.env` or the environment. It runs locally on CPU without an API key, account, or per-request fee. Model weights require an initial download (about 2 GB), disk space, memory, and CPU time; response latency depends on the machine. Ollama has no published host port; the API reaches it over the Compose network. Qwen2.5 is published under Apache-2.0 terms; see the upstream [Qwen2.5 license](https://github.com/QwenLM/Qwen2.5/blob/main/LICENSE) and [Ollama model page](https://ollama.com/library/qwen2.5). Verify applicable license terms before redistribution or commercial use.
+The default model is `qwen2.5-coder:1.5b`, configured through `OLLAMA_MODEL` in `.env` or the environment. It is a smaller code-oriented model than the previous 3B general-purpose Qwen model and is intended to reduce local inference and download costs. It runs locally without an API key, account, or per-request fee. Actual latency and SQL quality depend on the machine and question; validate the generated SQL and results before relying on them. Ollama has no published host port; the API reaches it over the Compose network.
 
 ### Tests
 
@@ -175,13 +173,12 @@ Tests cover deterministic generation, distinct metric shapes, completion-marker 
 
 ## Areas of depth
 
-1. **Metric-aware data modeling:** points, intervals, count buckets, and sparse measurements remain distinct; cross-metric summaries align by day without inventing missing measurements.
-2. **Reproducible, bounded ingestion:** a fixed seed, visible JSONL-to-Parquet stages, validation, date partitioning, and least-privilege service identities make the pipeline inspectable.
+1. **Weight insights app** that can be found in the weight-insights-app branch of this repo: The area of depth would be the addition of a gold layer of data consisting of computed weight recommendations. This computation has been done by a machine learning script. It showcases how to deliver insightful data to the customer
+2. **Heart rate alarm:** can be found in the heart-rate-alarm branch of this repo: The area of depth would be the difference of data injection (streaming in stead of batch), because the goal of this app would be to know the heart rate real-time
 
 ## AI usage
 
-AI assistance was used for architecture exploration and implementation drafting. The initial single-metric proposal was broadened to all five metrics with different sampling shapes. The first local-files-only storage suggestion was changed to MinIO after discussing the value of demonstrating a service boundary. The implementation separates generator, ETL, storage, and API responsibilities while retaining batch ingestion for the small synthetic workload.
+AI has been extensively used during this take home exam. The way I worked was as follows: I decided upon the use cases, architecture, what tools to use and the AI did the coding.
 
-I would not trust AI alone to establish that synthetic health data is physiologically valid, generated SQL answers the question, query results are correct, or deployment is secure. Those require explicit assumptions, tests against known data, and human review. The API's ephemeral cache instead of direct DuckDB-to-S3 querying is a deliberate tradeoff to avoid a runtime extension dependency; it should be revisited if data size grows.
-
-If I had two more weeks, I would add a user-facing query history with saved, human-reviewed examples; benchmark and tune the local model against a fixed set of natural-language questions; and add explicit semantic checks for date ranges and aggregation intent. I would also load-test concurrent queries and decide whether the API's startup cache should become incremental as the dataset grows.
+# What would I do if I would have 2 more weeks
+If I would have more time, I would work on creating a production ready system in the cloud (for example in AWS). First by simply migrating the microsystems in their containers, but secondly by using the cloud native solutions, like native S3 buckets in stead of Minio in a container. 

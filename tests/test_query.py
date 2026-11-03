@@ -105,6 +105,14 @@ def test_duckdb_reads_records_and_aligns_daily_metric_summaries(tmp_path):
     )
     assert filtered_result["rows"] == [{"bpm": 72}]
 
+    date_result = service.run_sql(
+        "SELECT DATE(event_date) AS day, avg(bpm) AS avg_bpm "
+        "FROM heart_rate WHERE user_id = 'user-0001' "
+        "AND event_date BETWEEN DATE '2025-01-01' AND DATE '2025-01-01' "
+        "GROUP BY DATE(event_date)"
+    )
+    assert date_result["rows"] == [{"day": DAY, "avg_bpm": 72.0}]
+
     catalog = {table["name"]: table for table in service.catalog()}
     assert set(catalog) == {"heart_rate", "sleep", "steps", "workouts", "weight"}
     assert catalog["heart_rate"]["file_count"] == 1

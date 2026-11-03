@@ -44,7 +44,7 @@ services:
         fi
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:1.5b}
     volumes:
       - ollama_data:/root/.ollama
     networks:
@@ -118,7 +118,7 @@ services:
       S3_SECRET_KEY: ${API_SECRET_KEY:-local-api-secret}
       CURATED_BUCKET: health-curated
       OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:1.5b}
     ports:
       - "127.0.0.1:8000:8000"
     networks:
