@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -22,14 +22,20 @@ def _prompt(question: str, tables: List[Dict], reference_date: date) -> str:
         )
         for table in tables
     )
+    ten_day_start = reference_date - timedelta(days=9)
     return f"""Translate the user's question into exactly one DuckDB SQL SELECT query.
 Return only a JSON object with one string property named "sql".
 
 Rules:
+- Use DuckDB SQL syntax only; do not use MySQL or PostgreSQL-specific syntax.
 - Query only these tables and columns:
 {schema}
 - Do not use table functions, external files, system catalogs, DDL, DML, or multiple statements.
 - Use only ordinary SQL aggregate, date, and string functions.
+- Date partition columns such as event_date and night_date are already DATE values. Group and filter on them directly; do not wrap them in DATE(...).
+- Do not use DATE_SUB or other MySQL date functions. For date ranges, use DuckDB DATE literals and BETWEEN, for example:
+  event_date BETWEEN DATE '{ten_day_start.isoformat()}' AND DATE '{reference_date.isoformat()}'
+- The example above is the inclusive last 10 dataset dates. For other relative periods, calculate the inclusive range from the dataset's latest date; never use CURRENT_DATE because the dataset may be historical.
 - Keep results useful and bounded; add LIMIT 100 unless the query is an aggregate.
 - User IDs have the form user-0001. Do not invent a user ID if none is specified.
 - The synthetic dataset's latest date is {reference_date.isoformat()}. Interpret relative periods such as "last week" relative to that date. If a month is given without a year, use the year of the dataset's latest date.
